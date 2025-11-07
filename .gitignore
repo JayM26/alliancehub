@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.pot
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Environment & secrets
+.env
+*.env
+
+# Databases
+*.sqlite3
+postgres_data/
+
+# Docker artifacts
+*.pid
+*.log
+*.pid.lock
+
+# Django static & media files (optional)
+staticfiles/
+media/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Coverage / testing
+htmlcov/
+.coverage
+.tox/
+pytest_cache/

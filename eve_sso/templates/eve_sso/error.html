@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="text-center mt-5">
+    <h2 class="text-danger">Something Went Wrong</h2>
+    <p>{{ error }}</p>
+    {% if details %}
+      <pre class="text-light bg-dark p-3 mt-3 text-start">{{ details }}</pre>
+    {% endif %}
+    <a href="/sso/login/" class="btn btn-outline-light mt-3">Try Again</a>
+  </div>
+{% endblock %}

@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="text-center mt-5">
+    <h2>Welcome to AllianceHub</h2>
+    <p class="lead">Your centralized hub for fleet tracking, SRP, and alliance tools.</p>
+
+    {% if user.is_authenticated %}
+      <p class="mt-4">Logged in as <strong>{{ user.username }}</strong>.</p>
+      <a href="/admin/" class="btn btn-outline-light m-2">Admin Panel</a>
+      <form action="/accounts/logout/" method="post" style="display:inline;">
+         {% csrf_token %}
+         <button type="submit" class="btn btn-danger m-2">Logout</button>
+        </form>
+    {% else %}
+      <a href="/sso/login/" class="btn btn-primary m-2">Log in with EVE SSO</a>
+    {% endif %}
+  </div>
+{% endblock %}

@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container text-center mt-5">
+  <h2>Login to AllianceHub</h2>
+  <form method="post" class="mt-4">
+    {% csrf_token %}
+    <div class="mb-3">
+      <label for="id_username" class="form-label">Username</label>
+      <input type="text" name="username" id="id_username" class="form-control text-center" autofocus required>
+    </div>
+    <div class="mb-3">
+      <label for="id_password" class="form-label">Password</label>
+      <input type="password" name="password" id="id_password" class="form-control text-center" required>
+    </div>
+    <button type="submit" class="btn btn-primary btn-lg">Login</button>
+  </form>
+</div>
+{% endblock %}
