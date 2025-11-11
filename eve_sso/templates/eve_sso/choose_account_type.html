@@ -3,12 +3,39 @@
   <div class="container text-center mt-5">
     <h2>Welcome, Capsuleer!</h2>
     <p>You just logged in as <strong>{{ character.character_name }}</strong>.</p>
-    <p>Would you like to register this character as your <strong>Main Account</strong> or link it as an <strong>Alt</strong>?</p>
 
-    <form method="post">
+    <p class="lead mt-3">
+      Choose one of the options below to tell AllianceHub how to link this character:
+    </p>
+
+    <div class="text-start mx-auto mt-4" style="max-width: 600px;">
+      <div class="card bg-secondary text-light border-success p-3 mb-3">
+        <h5 style="color:#3cff73;">🧭 Register as Main</h5>
+
+        <p>
+          Choose this if <strong>{{ character.character_name }}</strong> is your main EVE account.
+          This will create a new AllianceHub user profile linked to this character.
+        </p>
+      </div>
+
+      <div class="card bg-secondary text-light border-success p-3 mb-3">
+        <h5 class="text-info">🔗 Link as Alt</h5>
+        <p>
+          Choose this if <strong>{{ character.character_name }}</strong> is an alt.
+          After clicking below, you’ll be redirected to log in with your main character via EVE SSO.
+          Once that’s complete, this alt will automatically link to your main account.
+        </p>
+      </div>
+    </div>
+
+    <form method="post" class="mt-4">
       {% csrf_token %}
-      <button type="submit" name="account_type" value="main" class="btn btn-success btn-lg m-2">Register as Main</button>
-      <button type="submit" name="account_type" value="alt" class="btn btn-primary btn-lg m-2">Link as Alt</button>
+      <button type="submit" name="account_type" value="main" class="btn btn-success btn-lg m-2">
+        Register as Main
+      </button>
+      <button type="submit" name="account_type" value="alt" class="btn btn-primary btn-lg m-2">
+        Link as Alt
+      </button>
     </form>
   </div>
 {% endblock %}

@@ -170,13 +170,11 @@ LOGGING = {
             "format": "[{asctime}] {levelname} {name}: {message}",
             "style": "{",
         },
+        "simple": {"format": "{levelname}: {message}", "style": "{"},
     },
     "handlers": {
-        "console": {
-            "class": "logging.StreamHandler",
-            "formatter": "verbose",
-        },
-        "sso_file": {
+        "console": {"class": "logging.StreamHandler", "formatter": "simple"},
+        "file": {
             "class": "logging.FileHandler",
             "filename": "logs/sso.log",
             "formatter": "verbose",
@@ -184,9 +182,10 @@ LOGGING = {
     },
     "loggers": {
         "eve_sso": {
-            "handlers": ["console", "sso_file"],
+            "handlers": ["console", "file"],
             "level": "WARNING",
             "propagate": False,
         },
+        "django": {"handlers": ["console"], "level": "WARNING"},
     },
 }

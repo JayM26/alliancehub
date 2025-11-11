@@ -1,21 +1,23 @@
-import requests
 import base64
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
+import requests
+
 from django.conf import settings
 from django.shortcuts import redirect, render
 from django.contrib.auth import login
-from django.contrib.auth import get_user_model
-from django.http import JsonResponse
-from django.utils import timezone
 from django.urls import reverse
-from eve_sso.utils import ensure_valid_access_token
-from .models import EveCharacter
+from django.utils import timezone
+from django.utils.text import slugify
+from django.contrib.auth import get_user_model
 from urllib.parse import urlencode
+
+from eve_sso.models import EveCharacter
+from eve_sso.utils import get_character_info, get_name
 from accounts.signals import attach_pending_character
 
-User = get_user_model()
 logger = logging.getLogger(__name__)
+User = get_user_model()
 
 
 def eve_login(request):
@@ -87,21 +89,12 @@ def eve_callback(request):
 
     logger.info(f"Verified EVE character: {character_name} ({character_id})")
 
-    # Fetch extra info from ESI
-    esi_response = requests.get(
-        f"https://esi.evetech.net/latest/characters/{character_id}/"
-    )
-    if esi_response.status_code == 200:
-        esi_data = esi_response.json()
-        corp_id = esi_data.get("corporation_id")
-        alliance_id = esi_data.get("alliance_id")
-    else:
-        corp_id = alliance_id = None
-        logger.warning("Failed to fetch ESI character details")  # <-- Debug line
+    # Fetch ESI details
+    corp_id, alliance_id = get_character_info(character_id)
 
-    # Fetch corp and alliance names
-    corp_name = None
-    alliance_name = None
+    # Fetch names
+    corp_name = get_name("corporations", corp_id) if corp_id else None
+    alliance_name = get_name("alliances", alliance_id) if alliance_id else None
 
     # Corporation lookup
     if corp_id:
@@ -134,10 +127,22 @@ def eve_callback(request):
         existing_char.save()
         logger.info(f"Updated existing character {character_name}")
 
-        # ✅ Log the user in if not already
-        login(request, existing_char.user)
+        # ✅ Log the user in through their main account if available
+        main_user = (
+            existing_char.user
+            if not hasattr(existing_char.user, "main_character")
+            or existing_char.user.main_character == existing_char
+            else existing_char.user
+        )
 
-        # ✅ Attach any pending alt that was waiting in session
+        login(request, main_user)
+        attach_pending_character(sender=None, request=request, user=request.user)
+
+        existing_char.save()
+        logger.info(f"Updated existing character {character_name}")
+
+        # Log in and link any pending alt
+        login(request, existing_char.user)
         attach_pending_character(sender=None, request=request, user=request.user)
 
         return render(request, "eve_sso/success.html", {"character": character_name})
@@ -228,8 +233,15 @@ def choose_account_type(request):
 
             User = get_user_model()
 
+            # Sanitize the username (EVE character names may contain spaces)
+            safe_username = slugify(pending_char["character_name"])
+
+            # If that username already exists, append the character ID
+            if User.objects.filter(username=safe_username).exists():
+                safe_username = f"{safe_username}-{pending_char['character_id']}"
+
             new_user = User.objects.create_user(
-                username=pending_char["character_name"],
+                username=safe_username,
                 password=None,  # we'll handle proper login after
             )
 
@@ -255,13 +267,16 @@ def choose_account_type(request):
             login(request, new_user)
             request.session.pop("pending_character", None)
 
-            return redirect(
-                "/"
-            )  # or reverse("admin:index") if you prefer to go to /admin
+            return render(
+                request,
+                "eve_sso/success.html",
+                {"character": pending_char["character_name"]},
+            )
 
         # User chose to link as an alt
         elif choice == "alt":
-            # Keep the pending character in session so we can attach it after SSO login
+            # Keep pending_character in session for next SSO login
+            logger.info("Alt linking initiated — keeping pending_character in session")
             return redirect("eve_login")
 
     # GET request → render the choice page
