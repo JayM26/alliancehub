@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>My SRP Claims</h2>
+{% if claims %}
+  <table class="table table-striped">
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Ship</th>
+        <th>Category</th>
+        <th>Status</th>
+        <th>Payout (ISK)</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for claim in claims %}
+      <tr>
+        <td>{{ claim.submitted_at|date:"Y-m-d H:i" }}</td>
+        <td>{{ claim.ship.ship_name }}</td>
+        <td>{{ claim.get_category_display }}</td>
+        <td>{{ claim.get_status_display }}</td>
+        <td>{{ claim.payout_amount|floatformat:0 }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p>You haven’t submitted any SRP claims yet.</p>
+{% endif %}
+{% endblock %}

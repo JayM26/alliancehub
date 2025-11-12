@@ -29,4 +29,5 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("sso/", include("eve_sso.urls")),
     path("accounts/", include("django.contrib.auth.urls")),
+    path("srp/", include("srp.urls")),
 ]

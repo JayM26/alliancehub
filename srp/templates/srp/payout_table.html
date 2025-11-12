@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Ship Payouts</h2>
+<table class="table table-striped table-hover">
+  <thead>
+    <tr>
+      <th>Ship Name</th>
+      <th>Strategic</th>
+      <th>Peacetime</th>
+      <th>Shitstack</th>
+      <th>TNT Special</th>
+      <th>Hull Contract</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for ship in ships %}
+    <tr>
+      <td>{{ ship.ship_name }}</td>
+      <td>{{ ship.strategic|floatformat:0 }}</td>
+      <td>{{ ship.peacetime|floatformat:0 }}</td>
+      <td>{{ ship.shitstack|floatformat:0 }}</td>
+      <td>{{ ship.tnt_special|floatformat:0 }}</td>
+      <td>{% if ship.hull_contract %}Yes{% else %}No{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

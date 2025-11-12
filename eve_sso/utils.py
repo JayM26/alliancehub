@@ -1,9 +1,9 @@
 import base64
 import logging
-import requests
-from django.utils import timezone
+import requests  # pyright: ignore[reportMissingModuleSource]
+from django.utils import timezone  # pyright: ignore[reportMissingModuleSource]
 from datetime import datetime, timedelta
-from django.conf import settings
+from django.conf import settings  # pyright: ignore[reportMissingModuleSource]
 from eve_sso.models import EveCharacter
 
 logger = logging.getLogger(__name__)

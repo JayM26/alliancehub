@@ -1,19 +1,25 @@
 import base64
 import logging
 from datetime import timedelta
-import requests
+import requests  # pyright: ignore[reportMissingModuleSource]
 
-from django.conf import settings
-from django.shortcuts import redirect, render
-from django.contrib.auth import login
-from django.urls import reverse
-from django.utils import timezone
-from django.utils.text import slugify
-from django.contrib.auth import get_user_model
+from django.conf import settings  # pyright: ignore[reportMissingModuleSource]
+from django.shortcuts import (  # pyright: ignore[reportMissingModuleSource]
+    redirect,
+    render,
+)  # pyright: ignore[reportMissingModuleSource]
+from django.contrib.auth import login  # pyright: ignore[reportMissingModuleSource]
+from django.urls import reverse  # pyright: ignore[reportMissingModuleSource]
+from django.utils import timezone  # pyright: ignore[reportMissingModuleSource]
+from django.utils.text import slugify  # pyright: ignore[reportMissingModuleSource]
+from django.contrib.auth import (  # pyright: ignore[reportMissingModuleSource]
+    get_user_model,
+)  # pyright: ignore[reportMissingModuleSource]
+from django.http import JsonResponse  # pyright: ignore[reportMissingModuleSource]
 from urllib.parse import urlencode
 
 from eve_sso.models import EveCharacter
-from eve_sso.utils import get_character_info, get_name
+from eve_sso.utils import get_character_info, get_name, ensure_valid_access_token
 from accounts.signals import attach_pending_character
 
 logger = logging.getLogger(__name__)
@@ -229,7 +235,9 @@ def choose_account_type(request):
 
         # User chose to register a new main account
         if choice == "main":
-            from django.contrib.auth import get_user_model
+            from django.contrib.auth import (  # pyright: ignore[reportMissingModuleSource]
+                get_user_model,
+            )  # pyright: ignore[reportMissingModuleSource]
 
             User = get_user_model()
 
