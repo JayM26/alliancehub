@@ -15,9 +15,9 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 
-from django.contrib import admin
-from django.urls import path, include
-from django.shortcuts import render
+from django.contrib import admin  # pyright: ignore[reportMissingModuleSource]
+from django.urls import path, include  # pyright: ignore[reportMissingModuleSource]
+from django.shortcuts import render  # pyright: ignore[reportMissingModuleSource]
 
 
 def home(request):

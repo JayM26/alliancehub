@@ -128,6 +128,9 @@ class SRPClaim(models.Model):
             models.Index(fields=["character_name"]),
         ]
         ordering = ["-submitted_at"]
+        permissions = [
+            ("can_review_srp", "Can review SRP claims"),
+        ]
 
     def __str__(self):
         return f"{self.character_name} - {self.ship.ship_name} - {self.category}"

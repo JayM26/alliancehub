@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>SRP Review Queue</h2>
+
+<form method="get" class="mb-3">
+  <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:end;">
+    <div>
+      <label>Status</label><br/>
+      <select name="status">
+        <option value="PENDING" {% if status == "PENDING" %}selected{% endif %}>Pending</option>
+        <option value="APPROVED" {% if status == "APPROVED" %}selected{% endif %}>Approved</option>
+        <option value="DENIED" {% if status == "DENIED" %}selected{% endif %}>Denied</option>
+        <option value="PAID" {% if status == "PAID" %}selected{% endif %}>Paid</option>
+      </select>
+    </div>
+
+    <div>
+      <label>Category</label><br/>
+      <select name="category">
+        <option value="" {% if not category %}selected{% endif %}>All</option>
+        <option value="STRATEGIC" {% if category == "STRATEGIC" %}selected{% endif %}>Strategic</option>
+        <option value="PEACETIME" {% if category == "PEACETIME" %}selected{% endif %}>Peacetime</option>
+        <option value="SHITSTACK" {% if category == "SHITSTACK" %}selected{% endif %}>Shitstack</option>
+        <option value="TNT_SPECIAL" {% if category == "TNT_SPECIAL" %}selected{% endif %}>TNT Special</option>
+      </select>
+    </div>
+
+    <div>
+      <label>Search</label><br/>
+      <input type="text" name="q" value="{{ q }}" placeholder="pilot, ship, system, link" />
+    </div>
+
+    <div>
+      <button type="submit" class="btn btn-primary">Filter</button>
+    </div>
+  </div>
+</form>
+
+{% if claims %}
+  <table class="table table-striped table-hover">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Submitted</th>
+        <th>Pilot</th>
+        <th>Ship</th>
+        <th>Category</th>
+        <th>System</th>
+        <th>Payout</th>
+        <th>Status</th>
+        <th>Broadcast</th>
+        <th style="width:220px;">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in claims %}
+      <tr>
+        <td>#{{ c.id }}</td>
+        <td>{{ c.submitted_at|date:"Y-m-d H:i" }}</td>
+        <td>{{ c.character_name }}</td>
+        <td>{{ c.ship.ship_name }}</td>
+        <td>{{ c.get_category_display }}</td>
+        <td>{{ c.system|default:"-" }}</td>
+        <td>{{ c.payout_amount|floatformat:0 }}</td>
+        <td>{{ c.get_status_display }}</td>
+        <td style="max-width: 280px;">
+          {% if c.broadcast_text %}
+            <div style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ c.broadcast_text }}</div>
+          {% else %}
+            -
+          {% endif %}
+        </td>
+        <td>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <form method="post" action="{% url 'srp:approve_claim' c.id %}">
+              {% csrf_token %}
+              <button class="btn btn-success btn-sm" {% if c.status != "PENDING" %}disabled{% endif %}>Approve</button>
+            </form>
+
+            <form method="post" action="{% url 'srp:deny_claim' c.id %}">
+              {% csrf_token %}
+              <button class="btn btn-danger btn-sm" {% if c.status != "PENDING" %}disabled{% endif %}>Deny</button>
+            </form>
+
+            <form method="post" action="{% url 'srp:pay_claim' c.id %}">
+              {% csrf_token %}
+              <button class="btn btn-secondary btn-sm" {% if c.status != "APPROVED" %}disabled{% endif %}>Mark Paid</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p>No claims match your filters.</p>
+{% endif %}
+
+{% endblock %}
