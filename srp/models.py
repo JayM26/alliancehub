@@ -45,6 +45,9 @@ class ShipPayout(models.Model):
 
     class Meta:
         ordering = ["ship_name"]
+        permissions = [
+            ("can_manage_srp_payouts", "Can manage SRP payouts"),
+        ]
 
     def __str__(self):
         return self.ship_name
@@ -130,6 +133,7 @@ class SRPClaim(models.Model):
         ordering = ["-submitted_at"]
         permissions = [
             ("can_review_srp", "Can review SRP claims"),
+            ("can_view_srp_reports", "Can view SRP reports"),
         ]
 
     def __str__(self):
