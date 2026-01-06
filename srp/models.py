@@ -85,33 +85,94 @@ class SRPConfig(models.Model):
 class SRPClaim(models.Model):
     """User-submitted SRP claim (loss)."""
 
+    # -------------------------
+    # Submitter / ownership
+    # -------------------------
     submitter = models.ForeignKey(
         User, on_delete=models.CASCADE, related_name="srp_claims"
     )
-    character_name = models.CharField(max_length=100)
-
-    ship = models.ForeignKey(
-        ShipPayout, on_delete=models.PROTECT, related_name="claims"
+    character_name = models.CharField(
+        max_length=100,
+        help_text="Character name reported by submitter (may differ from victim)",
     )
+
+    # -------------------------
+    # Ship / payout
+    # -------------------------
+    ship = models.ForeignKey(
+        ShipPayout,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="claims",
+        help_text="Resolved ShipPayout (manual or ESI)",
+    )
+
     category = models.CharField(max_length=20, choices=SRP_CATEGORIES)
 
-    esi_link = models.URLField(help_text="Killmail/ESI link")
+    isk_loss = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(0)],
+    )
+    payout_amount = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        blank=True,
+        null=True,
+    )
+
+    # -------------------------
+    # Killmail / ESI input
+    # -------------------------
+    esi_link = models.URLField(help_text="Killmail / ESI link")
+
+    killmail_id = models.BigIntegerField(null=True, blank=True)
+    killmail_hash = models.CharField(max_length=255, null=True, blank=True)
+    killmail_raw = models.JSONField(null=True, blank=True)
+
+    # -------------------------
+    # Victim (from ESI)
+    # -------------------------
+    victim_character_id = models.BigIntegerField(null=True, blank=True)
+    victim_character_name = models.CharField(max_length=255, null=True, blank=True)
+
+    ship_type_id = models.BigIntegerField(null=True, blank=True)
+    ship_name = models.CharField(max_length=255, null=True, blank=True)
+
+    solar_system_id = models.BigIntegerField(null=True, blank=True)
+    solar_system_name = models.CharField(max_length=255, null=True, blank=True)
+
+    # -------------------------
+    # Location (legacy/manual)
+    # -------------------------
     system = models.CharField(max_length=100, blank=True, null=True)
     region = models.CharField(max_length=100, blank=True, null=True)
 
+    # -------------------------
+    # Additional claim data
+    # -------------------------
     broadcast_text = models.TextField(
-        blank=True
-    )  # required for Strategic/Peacetime (validated in clean)
-    fit_data = models.JSONField(blank=True, null=True)  # optional MVP
-
-    isk_loss = models.DecimalField(
-        max_digits=20, decimal_places=2, default=0, validators=[MinValueValidator(0)]
-    )
-    payout_amount = models.DecimalField(
-        max_digits=20, decimal_places=2, blank=True, null=True
+        blank=True,
+        help_text="Fleet broadcast text (required for some categories)",
     )
 
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="PENDING")
+    fit_data = models.JSONField(
+        blank=True,
+        null=True,
+        help_text="Optional ship fitting data (future use)",
+    )
+
+    # -------------------------
+    # Review / processing
+    # -------------------------
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="PENDING",
+    )
+
     reviewer = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
@@ -119,10 +180,43 @@ class SRPClaim(models.Model):
         blank=True,
         related_name="reviewed_srp_claims",
     )
-    note = models.TextField(blank=True)
+
+    note = models.TextField(
+        blank=True,
+        help_text="Latest reviewer note (full history in ClaimReview)",
+    )
 
     submitted_at = models.DateTimeField(auto_now_add=True)
     processed_at = models.DateTimeField(blank=True, null=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+
+    def calculate_payout(self):
+        """
+        Computes payout from ShipPayout + claim category.
+        If ship isn't set yet (Option B / ESI), payout is 0.
+        """
+        if not self.ship:
+            return 0
+        base = self.ship.payout_for_category(self.category)
+        return base or 0
+
+    def set_status(self, new_status: str, reviewer=None, note: str = ""):
+        self.status = new_status
+        if reviewer:
+            self.reviewer = reviewer
+        if new_status in {"APPROVED", "DENIED", "PAID"}:
+            self.processed_at = timezone.now()
+        if note:
+            self.note = (self.note + "\n" if self.note else "") + note
+
+    def save(self, *args, **kwargs):
+        # Only auto-calc when payout is missing (lets you override manually later if desired)
+        if SRPConfig.get().auto_calculate_payouts and self.payout_amount is None:
+            self.payout_amount = self.calculate_payout()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"SRPClaim #{self.id} - {self.character_name}"
 
     class Meta:
         indexes = [
@@ -135,9 +229,6 @@ class SRPClaim(models.Model):
             ("can_review_srp", "Can review SRP claims"),
             ("can_view_srp_reports", "Can view SRP reports"),
         ]
-
-    def __str__(self):
-        return f"{self.character_name} - {self.ship.ship_name} - {self.category}"
 
     # ---- business logic
     def clean(self):
@@ -152,26 +243,6 @@ class SRPClaim(models.Model):
             raise ValidationError(
                 "Broadcast/Op Post is required for Strategic or Peacetime claims."
             )
-
-    def calculate_payout(self):
-        base = self.ship.payout_for_category(self.category)
-        cfg = SRPConfig.get()
-        return (base or 0) * (cfg.default_multiplier or 1)
-
-    def set_status(self, new_status: str, reviewer=None, note: str = ""):
-        self.status = new_status
-        if reviewer and not self.reviewer:
-            self.reviewer = reviewer
-        if new_status in {"APPROVED", "DENIED", "PAID"}:
-            self.processed_at = timezone.now()
-        if note:
-            self.note = (self.note + "\n" if self.note else "") + note
-
-    def save(self, *args, **kwargs):
-        # auto-calc payout on create or when missing
-        if SRPConfig.get().auto_calculate_payouts and (self.payout_amount is None):
-            self.payout_amount = self.calculate_payout()
-        super().save(*args, **kwargs)
 
 
 class ClaimReview(models.Model):

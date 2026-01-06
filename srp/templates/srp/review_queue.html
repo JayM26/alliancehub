@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
+{% load humanize %}
+
 <h2>SRP Review Queue</h2>
 
 <form method="get" class="mb-3">
@@ -7,6 +9,7 @@
     <div>
       <label>Status</label><br/>
       <select name="status">
+        <option value="ALL" {% if status == "ALL" %}selected{% endif %}>All</option>
         <option value="PENDING" {% if status == "PENDING" %}selected{% endif %}>Pending</option>
         <option value="APPROVED" {% if status == "APPROVED" %}selected{% endif %}>Approved</option>
         <option value="DENIED" {% if status == "DENIED" %}selected{% endif %}>Denied</option>
@@ -42,14 +45,17 @@
       <tr>
         <th>ID</th>
         <th>Submitted</th>
-        <th>Pilot</th>
+        <th>Submitter</th>
+        <th>Victim</th>
         <th>Ship</th>
         <th>Category</th>
         <th>System</th>
         <th>Payout</th>
         <th>Status</th>
-        <th>Broadcast</th>
-        <th style="width:220px;">Actions</th>
+        <th>Reviewer</th>
+        <th>Processed</th>
+        <th>Paid</th>
+        <th style="width:320px;">Actions</th>
       </tr>
     </thead>
     <tbody>
@@ -57,36 +63,115 @@
       <tr>
         <td>#{{ c.id }}</td>
         <td>{{ c.submitted_at|date:"Y-m-d H:i" }}</td>
-        <td>{{ c.character_name }}</td>
-        <td>{{ c.ship.ship_name }}</td>
-        <td>{{ c.get_category_display }}</td>
-        <td>{{ c.system|default:"-" }}</td>
-        <td>{{ c.payout_amount|floatformat:0 }}</td>
-        <td>{{ c.get_status_display }}</td>
-        <td style="max-width: 280px;">
-          {% if c.broadcast_text %}
-            <div style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ c.broadcast_text }}</div>
+        <td>{{ c.submitter.username }}</td>
+        <td>{{ c.victim_character_name|default:"—" }}</td>
+
+        <td>
+          {% if c.killmail_id %}
+            <a
+              href="https://zkillboard.com/kill/{{ c.killmail_id }}/"
+              target="_blank"
+              rel="noopener"
+              class="link-info"
+            >
+              {% if c.ship %}
+                {{ c.ship.ship_name }}
+              {% elif c.ship_name %}
+                {{ c.ship_name }}
+              {% else %}
+                Unknown Ship
+              {% endif %}
+            </a>
           {% else %}
-            -
+            {% if c.ship %}
+              {{ c.ship.ship_name }}
+            {% elif c.ship_name %}
+              {{ c.ship_name }}
+            {% else %}
+              —
+            {% endif %}
           {% endif %}
         </td>
+
+        <td>{{ c.get_category_display }}</td>
+
         <td>
-          <div style="display:flex; gap:8px; flex-wrap:wrap;">
-            <form method="post" action="{% url 'srp:approve_claim' c.id %}">
-              {% csrf_token %}
-              <button class="btn btn-success btn-sm" {% if c.status != "PENDING" %}disabled{% endif %}>Approve</button>
-            </form>
+          {% if c.solar_system_name %}
+            {{ c.solar_system_name }}
+          {% else %}
+            {{ c.system|default:"-" }}
+          {% endif %}
+        </td>
 
-            <form method="post" action="{% url 'srp:deny_claim' c.id %}">
-              {% csrf_token %}
-              <button class="btn btn-danger btn-sm" {% if c.status != "PENDING" %}disabled{% endif %}>Deny</button>
-            </form>
+        <td>{{ c.payout_amount|floatformat:0|intcomma }}</td>
 
-            <form method="post" action="{% url 'srp:pay_claim' c.id %}">
-              {% csrf_token %}
-              <button class="btn btn-secondary btn-sm" {% if c.status != "APPROVED" %}disabled{% endif %}>Mark Paid</button>
-            </form>
-          </div>
+        <td>{{ c.get_status_display }}</td>
+
+        <td>
+          {% if c.reviewer %}
+            {{ c.reviewer.username }}
+          {% else %}
+            —
+          {% endif %}
+        </td>
+
+        <td>
+          {% if c.processed_at %}
+            {{ c.processed_at|date:"Y-m-d H:i" }}
+          {% else %}
+            —
+          {% endif %}
+        </td>
+
+        <td>
+          {% if c.paid_at %}
+            {{ c.paid_at|date:"Y-m-d H:i" }}
+          {% else %}
+            —
+          {% endif %}
+        </td>
+
+        <td>
+          <form method="post" class="d-flex flex-column gap-2" style="min-width: 320px;">
+            {% csrf_token %}
+
+            <!-- Row of actions -->
+            <div class="d-flex flex-wrap gap-2">
+              <a class="btn btn-info btn-sm" href="{% url 'srp:claim_detail' c.id %}">View</a>
+
+              <button
+                class="btn btn-success btn-sm"
+                formaction="{% url 'srp:approve_claim' c.id %}"
+                {% if c.status != "PENDING" %}disabled{% endif %}
+              >
+                Approve
+              </button>
+
+              <button
+                class="btn btn-danger btn-sm"
+                formaction="{% url 'srp:deny_claim' c.id %}"
+                {% if c.status != "PENDING" %}disabled{% endif %}
+              >
+                Deny
+              </button>
+
+              <button
+                class="btn btn-secondary btn-sm"
+                formaction="{% url 'srp:pay_claim' c.id %}"
+                {% if c.status != "APPROVED" %}disabled{% endif %}
+              >
+                Mark Paid
+              </button>
+            </div>
+
+            <!-- Note field below -->
+            <textarea
+              name="comment"
+              class="form-control form-control-sm"
+              rows="2"
+              placeholder="Reviewer note (optional)"
+            ></textarea>
+          </form>
         </td>
       </tr>
       {% endfor %}

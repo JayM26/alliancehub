@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2 class="mb-0">SRP Claim #{{ claim.id }}</h2>
+
+  <div class="d-flex gap-2">
+    {% if is_reviewer %}
+      <a class="btn btn-outline-light btn-sm" href="{% url 'srp:review_queue' %}">Back to Queue</a>
+    {% else %}
+      <a class="btn btn-outline-light btn-sm" href="{% url 'srp:my_claims' %}">Back to My Claims</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card bg-secondary text-light mb-4">
+  <div class="card-body">
+    <div class="row g-3">
+      <div class="col-md-3">
+        <div class="text-muted small">Status</div>
+        <div class="fw-bold">{{ claim.get_status_display }}</div>
+      </div>
+
+      <div class="col-md-3">
+        <div class="text-muted small">Submitted</div>
+        <div>{{ claim.created_at|date:"Y-m-d H:i" }}</div>
+      </div>
+
+      <div class="col-md-3">
+        <div class="text-muted small">Submitter</div>
+        <div>{{ claim.submitter.username }}</div>
+      </div>
+
+      <div class="col-md-3">
+        <div class="text-muted small">Victim (ESI)</div>
+        <div>{{ claim.victim_character_name|default:"—" }}</div>
+      </div>
+
+      <div class="col-md-4">
+        <div class="text-muted small">Ship</div>
+        <div>
+          {% if claim.ship %}
+            {{ claim.ship.ship_name }}
+          {% else %}
+            —
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="col-md-4">
+        <div class="text-muted small">Category</div>
+        <div>{{ claim.get_category_display }}</div>
+      </div>
+
+      <div class="col-md-4">
+        <div class="text-muted small">Payout</div>
+        <div>{{ claim.payout_amount|floatformat:0 }}</div>
+      </div>
+
+      <div class="col-md-6">
+        <div class="text-muted small">System / Region</div>
+        <div>
+          {{ claim.system|default:"—" }}
+          {% if claim.region %} / {{ claim.region }}{% endif %}
+        </div>
+      </div>
+
+      <div class="col-md-6">
+        <div class="text-muted small">ESI Link</div>
+        <div style="word-break:break-all;">
+          {% if claim.esi_link %}
+            <a class="link-light" href="{{ claim.esi_link }}" target="_blank" rel="noopener">Open ESI / Killmail Link</a>
+          {% else %}
+            —
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="col-12">
+        <div class="text-muted small">Broadcast</div>
+        <div class="p-2 rounded bg-dark">
+          {% if claim.broadcast_text %}
+            {{ claim.broadcast_text }}
+          {% else %}
+            —
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="col-md-4">
+        <div class="text-muted small">Reviewer</div>
+        <div>
+          {% if claim.reviewer %}{{ claim.reviewer.username }}{% else %}—{% endif %}
+        </div>
+      </div>
+
+      <div class="col-md-4">
+        <div class="text-muted small">Processed</div>
+        <div>
+          {% if claim.processed_at %}{{ claim.processed_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}
+        </div>
+      </div>
+
+      <div class="col-md-4">
+        <div class="text-muted small">Paid</div>
+        <div>
+          {% if claim.paid_at %}{{ claim.paid_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<h4 class="mb-2">Review History</h4>
+
+{% if reviews %}
+  <div class="table-responsive">
+    <table class="table table-dark table-striped table-hover align-middle">
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>Action</th>
+          <th>Reviewer</th>
+          <th>Comment</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in reviews %}
+          <tr>
+            <td>{{ r.timestamp|date:"Y-m-d H:i" }}</td>
+            <td>{{ r.action }}</td>
+            <td>{{ r.reviewer.username }}</td>
+            <td style="max-width:520px;">
+              {% if r.comment %}
+                {{ r.comment }}
+              {% else %}
+                —
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% else %}
+  <p class="text-muted">No review actions recorded yet.</p>
+{% endif %}
+
+{% endblock %}
