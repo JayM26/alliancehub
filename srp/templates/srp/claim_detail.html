@@ -1,150 +1,376 @@
 {% extends "base.html" %}
+{% load humanize %}
+{% load srp_extras %}
+
 {% block content %}
+<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
+  <div>
+    <h2 class="mb-1">SRP Claim #{{ claim.id }}</h2>
+    <div class="text-secondary">
+      Submitted {{ claim.submitted_at|date:"Y-m-d H:i" }}
+      · Status: <strong class="text-light">{{ claim.get_status_display }}</strong>
+    </div>
+  </div>
 
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h2 class="mb-0">SRP Claim #{{ claim.id }}</h2>
-
-  <div class="d-flex gap-2">
-    {% if is_reviewer %}
-      <a class="btn btn-outline-light btn-sm" href="{% url 'srp:review_queue' %}">Back to Queue</a>
-    {% else %}
-      <a class="btn btn-outline-light btn-sm" href="{% url 'srp:my_claims' %}">Back to My Claims</a>
+  <div class="d-flex gap-2 flex-wrap">
+    {% if claim.killmail_id %}
+      <a class="btn btn-outline-info btn-sm"
+         href="https://zkillboard.com/kill/{{ claim.killmail_id }}/"
+         target="_blank" rel="noopener">
+        Open zKill
+      </a>
+    {% endif %}
+    {% if claim.esi_link %}
+      <a class="btn btn-outline-secondary btn-sm"
+         href="{{ claim.esi_link }}"
+         target="_blank" rel="noopener">
+        Open ESI
+      </a>
     {% endif %}
   </div>
 </div>
 
-<div class="card bg-secondary text-light mb-4">
-  <div class="card-body">
-    <div class="row g-3">
-      <div class="col-md-3">
-        <div class="text-muted small">Status</div>
-        <div class="fw-bold">{{ claim.get_status_display }}</div>
+<div class="row g-3">
+  <!-- Claim Summary -->
+  <div class="col-lg-6">
+    <div class="card bg-dark border-secondary h-100">
+      <div class="card-header border-secondary">
+        <strong>Claim Summary</strong>
       </div>
+      <div class="card-body">
+        <div class="row g-3">
+          <div class="col-6">
+            <div class="text-secondary small">Submitter</div>
+            <div>{{ claim.submitter.username }}</div>
+          </div>
+          <div class="col-6">
+            <div class="text-secondary small">Victim (ESI)</div>
+            <div>{{ claim.victim_character_name|default:"—" }}</div>
+          </div>
 
-      <div class="col-md-3">
-        <div class="text-muted small">Submitted</div>
-        <div>{{ claim.created_at|date:"Y-m-d H:i" }}</div>
-      </div>
-
-      <div class="col-md-3">
-        <div class="text-muted small">Submitter</div>
-        <div>{{ claim.submitter.username }}</div>
-      </div>
-
-      <div class="col-md-3">
-        <div class="text-muted small">Victim (ESI)</div>
-        <div>{{ claim.victim_character_name|default:"—" }}</div>
-      </div>
-
-      <div class="col-md-4">
-        <div class="text-muted small">Ship</div>
-        <div>
-          {% if claim.ship %}
-            {{ claim.ship.ship_name }}
-          {% else %}
-            —
-          {% endif %}
-        </div>
-      </div>
-
-      <div class="col-md-4">
-        <div class="text-muted small">Category</div>
-        <div>{{ claim.get_category_display }}</div>
-      </div>
-
-      <div class="col-md-4">
-        <div class="text-muted small">Payout</div>
-        <div>{{ claim.payout_amount|floatformat:0 }}</div>
-      </div>
-
-      <div class="col-md-6">
-        <div class="text-muted small">System / Region</div>
-        <div>
-          {{ claim.system|default:"—" }}
-          {% if claim.region %} / {{ claim.region }}{% endif %}
-        </div>
-      </div>
-
-      <div class="col-md-6">
-        <div class="text-muted small">ESI Link</div>
-        <div style="word-break:break-all;">
-          {% if claim.esi_link %}
-            <a class="link-light" href="{{ claim.esi_link }}" target="_blank" rel="noopener">Open ESI / Killmail Link</a>
-          {% else %}
-            —
-          {% endif %}
-        </div>
-      </div>
-
-      <div class="col-12">
-        <div class="text-muted small">Broadcast</div>
-        <div class="p-2 rounded bg-dark">
-          {% if claim.broadcast_text %}
-            {{ claim.broadcast_text }}
-          {% else %}
-            —
-          {% endif %}
-        </div>
-      </div>
-
-      <div class="col-md-4">
-        <div class="text-muted small">Reviewer</div>
-        <div>
-          {% if claim.reviewer %}{{ claim.reviewer.username }}{% else %}—{% endif %}
-        </div>
-      </div>
-
-      <div class="col-md-4">
-        <div class="text-muted small">Processed</div>
-        <div>
-          {% if claim.processed_at %}{{ claim.processed_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}
-        </div>
-      </div>
-
-      <div class="col-md-4">
-        <div class="text-muted small">Paid</div>
-        <div>
-          {% if claim.paid_at %}{{ claim.paid_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}
-        </div>
-      </div>
-
-    </div>
-  </div>
-</div>
-
-<h4 class="mb-2">Review History</h4>
-
-{% if reviews %}
-  <div class="table-responsive">
-    <table class="table table-dark table-striped table-hover align-middle">
-      <thead>
-        <tr>
-          <th>When</th>
-          <th>Action</th>
-          <th>Reviewer</th>
-          <th>Comment</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for r in reviews %}
-          <tr>
-            <td>{{ r.timestamp|date:"Y-m-d H:i" }}</td>
-            <td>{{ r.action }}</td>
-            <td>{{ r.reviewer.username }}</td>
-            <td style="max-width:520px;">
-              {% if r.comment %}
-                {{ r.comment }}
+          <div class="col-6">
+            <div class="text-secondary small">Ship</div>
+            <div>
+              {% if claim.ship %}
+                {{ claim.ship.ship_name }}
+              {% elif claim.ship_name %}
+                {{ claim.ship_name }}
+              {% elif claim.ship_type_id %}
+                {{ type_names|get_item:claim.ship_type_id|default:claim.ship_type_id }}
               {% else %}
                 —
               {% endif %}
-            </td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-{% else %}
-  <p class="text-muted">No review actions recorded yet.</p>
-{% endif %}
+            </div>
+          </div>
 
+          <div class="col-6">
+            <div class="text-secondary small">Category</div>
+            <div>{{ claim.get_category_display }}</div>
+          </div>
+
+          <div class="col-6">
+            <div class="text-secondary small">System</div>
+            <div>
+              {% if claim.solar_system_name %}
+                {{ claim.solar_system_name }}
+              {% else %}
+                {{ claim.system|default:"—" }}
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="col-6">
+            <div class="text-secondary small">Payout</div>
+            <div>
+              {% if claim.payout_amount is not None %}
+                {{ claim.payout_amount|floatformat:0|intcomma }} <span class="text-secondary small">ISK</span>
+              {% else %}
+                —
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="col-6">
+            <div class="text-secondary small">Reviewer</div>
+            <div>
+              {% if claim.reviewer %}{{ claim.reviewer.username }}{% else %}—{% endif %}
+            </div>
+          </div>
+
+          <div class="col-6">
+            <div class="text-secondary small">Processed / Paid</div>
+            <div class="small">
+              <div>
+                Processed:
+                {% if claim.processed_at %}{{ claim.processed_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}
+              </div>
+              <div>
+                Paid:
+                {% if claim.paid_at %}{{ claim.paid_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}
+              </div>
+            </div>
+          </div>
+
+          <div class="col-12">
+            <div class="text-secondary small">Broadcast / Op Post</div>
+            <div class="small" style="word-break:break-word;">
+              {% if claim.broadcast_text %}{{ claim.broadcast_text }}{% else %}—{% endif %}
+            </div>
+          </div>
+
+          {% if claim.note %}
+          <div class="col-12">
+            <div class="text-secondary small">Latest Note</div>
+            <div class="small" style="white-space:pre-wrap;">{{ claim.note }}</div>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Reviewer Actions -->
+  <div class="col-lg-6">
+    <div class="card bg-dark border-secondary h-100">
+      <div class="card-header border-secondary">
+        <strong>Reviewer Actions</strong>
+        {% if not is_reviewer %}
+          <span class="text-secondary small"> (reviewers only)</span>
+        {% endif %}
+      </div>
+      <div class="card-body">
+        {% if is_reviewer %}
+          <form method="post" class="d-flex flex-column gap-2">
+            {% csrf_token %}
+
+            <div class="d-flex flex-wrap gap-2">
+              <button
+                class="btn btn-success btn-sm"
+                formaction="{% url 'srp:approve_claim' claim.id %}"
+                {% if claim.status != "PENDING" %}disabled{% endif %}
+              >
+                Approve
+              </button>
+
+              <button
+                class="btn btn-danger btn-sm"
+                formaction="{% url 'srp:deny_claim' claim.id %}"
+                {% if claim.status != "PENDING" %}disabled{% endif %}
+              >
+                Deny
+              </button>
+
+              <button
+                class="btn btn-secondary btn-sm"
+                formaction="{% url 'srp:pay_claim' claim.id %}"
+                {% if claim.status != "APPROVED" %}disabled{% endif %}
+              >
+                Mark Paid
+              </button>
+            </div>
+
+            <textarea
+              name="comment"
+              class="form-control"
+              rows="4"
+              placeholder="Reviewer note (optional). Saved to the audit trail."
+            ></textarea>
+
+            <div class="text-secondary small">
+              Tip: write the note, then click an action button above.
+            </div>
+          </form>
+        {% else %}
+          <div class="text-secondary">You don’t have permission to take actions on this claim.</div>
+        {% endif %}
+
+        <hr class="border-secondary"/>
+
+        <div class="d-flex justify-content-between align-items-center">
+          <strong>Review History</strong>
+          <span class="text-secondary small">{{ reviews|length }} entries</span>
+        </div>
+
+        {% if reviews %}
+          <div class="mt-2">
+            {% for r in reviews %}
+              <div class="border border-secondary rounded p-2 mb-2">
+                <div class="d-flex justify-content-between flex-wrap gap-2">
+                  <div>
+                    <strong>{{ r.action }}</strong>
+                    <span class="text-secondary small">by {{ r.reviewer.username }}</span>
+                  </div>
+                  <div class="text-secondary small">{{ r.timestamp|date:"Y-m-d H:i" }}</div>
+                </div>
+                {% if r.comment %}
+                  <div class="mt-1 small" style="white-space:pre-wrap;">{{ r.comment }}</div>
+                {% endif %}
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="text-secondary mt-2">No review actions yet.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Killmail Data -->
+  <div class="col-12">
+    <div class="card bg-dark border-secondary">
+      <div class="card-header border-secondary">
+        <strong>Killmail Data (ESI)</strong>
+      </div>
+      <div class="card-body">
+        {% if km %}
+          <div class="row g-3 mb-3">
+            <div class="col-md-4">
+              <div class="text-secondary small">Killmail Time</div>
+              <div>{{ km.killmail_time|default:"—" }}</div>
+            </div>
+            <div class="col-md-4">
+              <div class="text-secondary small">Killmail ID</div>
+              <div>{{ km.killmail_id|default:claim.killmail_id|default:"—" }}</div>
+            </div>
+            <div class="col-md-4">
+              <div class="text-secondary small">Final Blow</div>
+              <div class="small">
+                {% if final_blow %}
+                  {% if final_blow.character_id %}
+                    {{ char_names|get_item:final_blow.character_id|default:final_blow.character_id }}
+                  {% else %}
+                    —
+                  {% endif %}
+                  ·
+                  {% if final_blow.ship_type_id %}
+                    {{ type_names|get_item:final_blow.ship_type_id|default:final_blow.ship_type_id }}
+                  {% else %}
+                    —
+                  {% endif %}
+                {% else %}
+                  —
+                {% endif %}
+              </div>
+            </div>
+          </div>
+
+          <div class="row g-3">
+            <!-- Fitting / Items -->
+            <div class="col-lg-7">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <strong>Fitting</strong>
+                <span class="text-secondary small">
+                  {{ items|length }} items (grouped)
+                </span>
+              </div>
+
+              {% if fitting_groups %}
+                {% for group_name, group_items in fitting_groups %}
+                  <div class="mb-3">
+                    <div class="d-flex justify-content-between align-items-center">
+                      <strong>{{ group_name }}</strong>
+                      <span class="text-secondary small">{{ group_items|length }}</span>
+                    </div>
+
+                    <div class="table-responsive">
+                      <table class="table table-sm table-dark table-striped mt-2">
+                        <thead>
+                          <tr>
+                            <th>Item</th>
+                            <th class="text-end">Destroyed</th>
+                            <th class="text-end">Dropped</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {% for it in group_items %}
+                            <tr>
+                              <td>
+                                {% if it.item_type_id %}
+                                  {{ type_names|get_item:it.item_type_id|default:it.item_type_id }}
+                                {% else %}
+                                  —
+                                {% endif %}
+                              </td>
+                              <td class="text-end">{{ it.quantity_destroyed|default:"0"|intcomma }}</td>
+                              <td class="text-end">{{ it.quantity_dropped|default:"0"|intcomma }}</td>
+                            </tr>
+                          {% endfor %}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                {% endfor %}
+                <div class="text-secondary small">
+                  MVP name resolution is capped. Missing names will show as IDs.
+                </div>
+              {% else %}
+                <div class="text-secondary">No item data found on this killmail.</div>
+              {% endif %}
+            </div>
+
+            <!-- Attackers -->
+            <div class="col-lg-5">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <strong>Top Attackers</strong>
+                <span class="text-secondary small">{{ attackers|length }} shown</span>
+              </div>
+
+              {% if attackers %}
+                <div class="table-responsive">
+                  <table class="table table-sm table-dark table-striped">
+                    <thead>
+                      <tr>
+                        <th>Final</th>
+                        <th>Pilot</th>
+                        <th>Ship</th>
+                        <th class="text-end">Damage</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for a in attackers %}
+                        <tr>
+                          <td>{% if a.final_blow %}★{% else %}—{% endif %}</td>
+
+                          <td class="small">
+                            {% if a.character_id %}
+                              {{ char_names|get_item:a.character_id|default:a.character_id }}
+                            {% else %}
+                              —
+                            {% endif %}
+                          </td>
+
+                          <td class="small">
+                            {% if a.ship_type_id %}
+                              {{ type_names|get_item:a.ship_type_id|default:a.ship_type_id }}
+                            {% else %}
+                              —
+                            {% endif %}
+                          </td>
+
+                          <td class="text-end">
+                            {{ a.damage_done|default:"0"|intcomma }}
+                          </td>
+                        </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div class="text-secondary small">
+                  MVP name resolution is capped to keep this page fast.
+                </div>
+              {% else %}
+                <div class="text-secondary">No attacker data found on this killmail.</div>
+              {% endif %}
+            </div>
+          </div>
+        {% else %}
+          <div class="text-secondary">
+            No killmail data stored for this claim yet. (ESI pull may have failed during submission.)
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock %}

@@ -28,6 +28,7 @@
   - [ ] SRP Reviewer
   - [ ] SRP Admin
 - [ ] (Optional) Filter/hide default Django add/change/delete/view perms in admin (keep DB intact)
+- Some sort of notification to set payments for new ships that are added
 
 ## SRP – Workflow & UX Improvements (MVP+)
 ### Reviewer Queue

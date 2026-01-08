@@ -226,6 +226,7 @@ def claim_detail(request, claim_id: int):
     Claim detail page:
     - Reviewers (srp.can_review_srp) can view any claim
     - Regular users can view only their own claims
+    - Includes MVP killmail summary (grouped fittings + top attackers)
     """
     claim = get_object_or_404(
         SRPClaim.objects.select_related("ship", "submitter", "reviewer"),
@@ -234,7 +235,6 @@ def claim_detail(request, claim_id: int):
 
     is_reviewer = request.user.has_perm("srp.can_review_srp")
     if not is_reviewer and claim.submitter_id != request.user.id:
-        # Keep it simple: 404 prevents leaking existence
         return redirect("srp:my_claims")
 
     reviews = (
@@ -243,6 +243,118 @@ def claim_detail(request, claim_id: int):
         .order_by("-timestamp")
     )
 
+    km = claim.killmail_raw or {}
+    victim = km.get("victim") or {}
+    items = victim.get("items") or []
+    attackers = km.get("attackers") or []
+
+    # Sort attackers by damage_done desc (top first)
+    attackers_sorted = sorted(
+        attackers,
+        key=lambda a: a.get("damage_done") or 0,
+        reverse=True,
+    )
+    attackers_top = attackers_sorted[:25]
+
+    final_blow = next((a for a in attackers_sorted if a.get("final_blow")), None)
+
+    # ---- Group fittings by slot (based on ESI "flag")
+    def _slot_group(flag: int) -> str:
+        # Common EVE inventory flags:
+        # High: 27-34, Mid: 19-26, Low: 11-18, Rigs: 92-94, Cargo: 5, Drone Bay: 87
+        if 27 <= flag <= 34:
+            return "High Slots"
+        if 19 <= flag <= 26:
+            return "Mid Slots"
+        if 11 <= flag <= 18:
+            return "Low Slots"
+        if 92 <= flag <= 94:
+            return "Rigs"
+        if flag == 5:
+            return "Cargo"
+        if flag == 87:
+            return "Drone Bay"
+        return "Other"
+
+    from collections import defaultdict
+
+    fittings_map = defaultdict(list)
+    for it in items:
+        flag = int(it.get("flag") or 0)
+        fittings_map[_slot_group(flag)].append(it)
+
+    fitting_groups = []
+    for name in [
+        "High Slots",
+        "Mid Slots",
+        "Low Slots",
+        "Rigs",
+        "Cargo",
+        "Drone Bay",
+        "Other",
+    ]:
+        if fittings_map.get(name):
+            fitting_groups.append((name, fittings_map[name]))
+
+    # ---- MVP name resolution (capped)
+    type_names: dict[int, str] = {}
+    char_names: dict[int, str] = {}
+
+    try:
+        from .esi import fetch_type_name, fetch_character_name
+    except Exception:
+        fetch_type_name = None
+        fetch_character_name = None
+
+    # Collect unique type_ids from items + attacker ships/weapons + victim ship
+    type_ids: set[int] = set()
+    for it in items:
+        tid = it.get("item_type_id")
+        if tid:
+            type_ids.add(int(tid))
+
+    for a in attackers_top:
+        for key in ("ship_type_id", "weapon_type_id"):
+            tid = a.get(key)
+            if tid:
+                type_ids.add(int(tid))
+
+    if claim.ship_type_id:
+        type_ids.add(int(claim.ship_type_id))
+
+    # Cap to avoid slow pages
+    type_ids_list = list(type_ids)[:40]
+
+    if fetch_type_name:
+        for tid in type_ids_list:
+            try:
+                name = fetch_type_name(int(tid))
+                if name:
+                    type_names[int(tid)] = name
+            except Exception:
+                pass
+
+    # Collect unique character_ids (top attackers + victim) and resolve (cap)
+    char_ids: set[int] = set()
+    for a in attackers_top:
+        cid = a.get("character_id")
+        if cid:
+            char_ids.add(int(cid))
+
+    if claim.victim_character_id:
+        char_ids.add(int(claim.victim_character_id))
+
+    char_ids_list = list(char_ids)[:15]
+
+    if fetch_character_name:
+        for cid in char_ids_list:
+            try:
+                name = fetch_character_name(int(cid))
+                if name:
+                    char_names[int(cid)] = name
+            except Exception:
+                pass
+
     return render(
         request,
         "srp/claim_detail.html",
@@ -250,5 +362,13 @@ def claim_detail(request, claim_id: int):
             "claim": claim,
             "reviews": reviews,
             "is_reviewer": is_reviewer,
+            "km": km,
+            "victim": victim,
+            "items": items,
+            "fitting_groups": fitting_groups,
+            "attackers": attackers_top,
+            "final_blow": final_blow,
+            "type_names": type_names,
+            "char_names": char_names,
         },
     )
