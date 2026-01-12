@@ -62,6 +62,23 @@ class ShipPayout(models.Model):
         return mapping.get(category, 0)
 
 
+class EsiTypeCache(models.Model):
+    """
+    Cache of EVE type_id -> name (modules, ships, ammo, rigs, etc.)
+    Bounded growth: type_ids are finite-ish and shared across killmails.
+    """
+
+    type_id = models.BigIntegerField(unique=True, db_index=True)
+    name = models.CharField(max_length=255)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["type_id"]
+
+    def __str__(self):
+        return f"{self.type_id} - {self.name}"
+
+
 class SRPConfig(models.Model):
     """One-row configuration for ceilings and behavior."""
 
@@ -73,6 +90,8 @@ class SRPConfig(models.Model):
     )
     auto_calculate_payouts = models.BooleanField(default=True)
     default_multiplier = models.DecimalField(max_digits=6, decimal_places=2, default=1)
+    blue_alliance_ids = models.JSONField(default=list, blank=True)
+    blue_corp_ids = models.JSONField(default=list, blank=True)
 
     def __str__(self):
         return "SRP Configuration"

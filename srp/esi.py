@@ -1,6 +1,10 @@
 import re  # pyright: ignore[reportMissingModuleSource]
-from typing import Optional, Tuple  # pyright: ignore[reportMissingModuleSource]
-
+from typing import (
+    Optional,
+    Tuple,
+    Iterable,
+)  # pyright: ignore[reportMissingModuleSource]
+from .models import EsiTypeCache  # pyright: ignore[reportMissingModuleSource]
 import requests  # pyright: ignore[reportMissingModuleSource]
 
 ESI_BASE = "https://esi.evetech.net/latest"
@@ -94,6 +98,49 @@ def populate_claim_from_esi(claim) -> bool:
             pass
 
     return True
+
+
+def get_type_names_cached(
+    type_ids: Iterable[int], fetch_cap: int = 40
+) -> dict[int, str]:
+    """
+    Returns {type_id: name} using DB cache first.
+    Fetches up to fetch_cap missing IDs from ESI and stores them.
+    """
+    ids = [int(x) for x in set(type_ids) if x]
+    if not ids:
+        return {}
+
+    # 1) Read what we already have
+    cached = EsiTypeCache.objects.filter(type_id__in=ids)
+    result = {int(row.type_id): row.name for row in cached}
+
+    missing = [tid for tid in ids if tid not in result]
+    if not missing:
+        return result
+
+    # 2) Fetch a capped number of missing type IDs from ESI
+    to_fetch = missing[: max(0, int(fetch_cap))]
+    new_rows = []
+
+    for tid in to_fetch:
+        try:
+            name = fetch_type_name(int(tid))
+            if name:
+                result[int(tid)] = name
+                new_rows.append(EsiTypeCache(type_id=int(tid), name=name))
+        except Exception:
+            # Don't break page load for a lookup failure
+            pass
+
+    # 3) Insert new cache rows (ignore conflicts if multiple requests race)
+    if new_rows:
+        try:
+            EsiTypeCache.objects.bulk_create(new_rows, ignore_conflicts=True)
+        except Exception:
+            pass
+
+    return result
 
 
 def fetch_character_name(character_id: int) -> str:

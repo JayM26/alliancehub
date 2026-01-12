@@ -11,9 +11,9 @@ from django.shortcuts import (  # pyright: ignore[reportMissingModuleSource]
 )
 from django.utils import timezone  # pyright: ignore[reportMissingModuleSource]
 
-from .esi import populate_claim_from_esi, fetch_type_name
+from .esi import populate_claim_from_esi, fetch_type_name, get_type_names_cached
 from .forms import SRPClaimForm
-from .models import ClaimReview, SRPClaim, ShipPayout
+from .models import ClaimReview, SRPClaim, ShipPayout, SRPConfig
 
 
 @login_required
@@ -131,6 +131,40 @@ def review_queue(request):
 
     claims = qs.order_by("-submitted_at")[:500]
 
+    # --- Flag-only checks for queue (Blue + NPC present)
+    cfg = SRPConfig.get()
+    blue_alliance_ids = set(
+        int(x) for x in (cfg.blue_alliance_ids or []) if str(x).isdigit()
+    )
+    blue_corp_ids = set(int(x) for x in (cfg.blue_corp_ids or []) if str(x).isdigit())
+
+    for c in claims:
+        km = c.killmail_raw or {}
+        attackers = km.get("attackers") or []
+
+        npc_present = False
+        blue_involved = False
+
+        for a in attackers:
+            char_id = a.get("character_id")
+            if not char_id:
+                npc_present = True
+            else:
+                alliance_id = a.get("alliance_id")
+                corp_id = a.get("corporation_id")
+                if (alliance_id and int(alliance_id) in blue_alliance_ids) or (
+                    corp_id and int(corp_id) in blue_corp_ids
+                ):
+                    blue_involved = True
+
+            # tiny early exit
+            if npc_present and blue_involved:
+                break
+
+        # attach flags to the object for the template
+        c.flag_npc = npc_present
+        c.flag_blue = blue_involved
+
     # Build dropdown options (ALL + whatever your model defines)
     status_choices = ["PENDING", "APPROVED", "DENIED", "PAID"]
 
@@ -166,16 +200,23 @@ def approve_claim(request, claim_id: int):
     claim = get_object_or_404(SRPClaim, id=claim_id)
     comment = _get_comment(request)
 
-    claim.set_status(
-        "APPROVED",
-        reviewer=request.user,
-        note=comment or "Approved via reviewer queue.",
-    )
-    claim.save()
+    if claim.status == "APPROVED":
+        # Toggle off -> back to PENDING
+        claim.set_status(
+            "PENDING", reviewer=request.user, note=comment or "Approval removed."
+        )
+        claim.processed_at = timezone.now()
+        claim.save()
+        _add_review_record(claim, request.user, "Unapproved", comment)
+        messages.success(request, f"Unapproved claim #{claim.id} (back to Pending).")
+    else:
+        # Normal approve only from PENDING (but allow if someone wants to correct a DENIED)
+        claim.set_status("APPROVED", reviewer=request.user, note=comment or "Approved.")
+        claim.processed_at = timezone.now()
+        claim.save()
+        _add_review_record(claim, request.user, "Approved", comment)
+        messages.success(request, f"Approved claim #{claim.id}.")
 
-    _add_review_record(claim, request.user, "Approved", comment)
-
-    messages.success(request, f"Approved claim #{claim.id}.")
     return redirect(request.META.get("HTTP_REFERER", "srp:review_queue"))
 
 
@@ -188,14 +229,24 @@ def deny_claim(request, claim_id: int):
     claim = get_object_or_404(SRPClaim, id=claim_id)
     comment = _get_comment(request)
 
-    claim.set_status(
-        "DENIED", reviewer=request.user, note=comment or "Denied via reviewer queue."
-    )
-    claim.save()
+    if claim.status == "DENIED":
+        # Toggle off -> back to PENDING
+        claim.set_status(
+            "PENDING", reviewer=request.user, note=comment or "Denial removed."
+        )
+        claim.processed_at = timezone.now()
+        claim.save()
+        _add_review_record(claim, request.user, "Undenied", comment)
+        messages.success(
+            request, f"Removed denial on claim #{claim.id} (back to Pending)."
+        )
+    else:
+        claim.set_status("DENIED", reviewer=request.user, note=comment or "Denied.")
+        claim.processed_at = timezone.now()
+        claim.save()
+        _add_review_record(claim, request.user, "Denied", comment)
+        messages.success(request, f"Denied claim #{claim.id}.")
 
-    _add_review_record(claim, request.user, "Denied", comment)
-
-    messages.success(request, f"Denied claim #{claim.id}.")
     return redirect(request.META.get("HTTP_REFERER", "srp:review_queue"))
 
 
@@ -208,15 +259,25 @@ def pay_claim(request, claim_id: int):
     claim = get_object_or_404(SRPClaim, id=claim_id)
     comment = _get_comment(request)
 
-    claim.set_status(
-        "PAID", reviewer=request.user, note=comment or "Paid via reviewer queue."
-    )
-    claim.paid_at = claim.paid_at or timezone.now()
-    claim.save()
+    if claim.status == "PAID":
+        # Toggle off -> back to APPROVED
+        claim.set_status(
+            "APPROVED", reviewer=request.user, note=comment or "Payment mark removed."
+        )
+        claim.paid_at = None
+        claim.processed_at = timezone.now()
+        claim.save()
+        _add_review_record(claim, request.user, "Unpaid", comment)
+        messages.success(request, f"Unpaid claim #{claim.id} (back to Approved).")
+    else:
+        # Mark paid (only makes sense from APPROVED, but allow as correction)
+        claim.set_status("PAID", reviewer=request.user, note=comment or "Paid.")
+        claim.paid_at = timezone.now()
+        claim.processed_at = timezone.now()
+        claim.save()
+        _add_review_record(claim, request.user, "Paid", comment)
+        messages.success(request, f"Marked claim #{claim.id} as Paid.")
 
-    _add_review_record(claim, request.user, "Paid", comment)
-
-    messages.success(request, f"Marked claim #{claim.id} as Paid.")
     return redirect(request.META.get("HTTP_REFERER", "srp:review_queue"))
 
 
@@ -226,7 +287,9 @@ def claim_detail(request, claim_id: int):
     Claim detail page:
     - Reviewers (srp.can_review_srp) can view any claim
     - Regular users can view only their own claims
-    - Includes MVP killmail summary (grouped fittings + top attackers)
+    - Flag-only auto checks: NPC-only / NPC-present / Blue-involved
+    - Uses DB cache for type names (modules/items) to avoid repeated ESI calls
+    - Reviewer can Approve/Unapprove, Deny/Undeny, Paid/Unpay from this page
     """
     claim = get_object_or_404(
         SRPClaim.objects.select_related("ship", "submitter", "reviewer"),
@@ -248,19 +311,8 @@ def claim_detail(request, claim_id: int):
     items = victim.get("items") or []
     attackers = km.get("attackers") or []
 
-    # Sort attackers by damage_done desc (top first)
-    attackers_sorted = sorted(
-        attackers,
-        key=lambda a: a.get("damage_done") or 0,
-        reverse=True,
-    )
-    attackers_top = attackers_sorted[:25]
-
-    final_blow = next((a for a in attackers_sorted if a.get("final_blow")), None)
-
     # ---- Group fittings by slot (based on ESI "flag")
     def _slot_group(flag: int) -> str:
-        # Common EVE inventory flags:
         # High: 27-34, Mid: 19-26, Low: 11-18, Rigs: 92-94, Cargo: 5, Drone Bay: 87
         if 27 <= flag <= 34:
             return "High Slots"
@@ -284,76 +336,61 @@ def claim_detail(request, claim_id: int):
         fittings_map[_slot_group(flag)].append(it)
 
     fitting_groups = []
-    for name in [
-        "High Slots",
-        "Mid Slots",
-        "Low Slots",
-        "Rigs",
-        "Cargo",
-        "Drone Bay",
-        "Other",
-    ]:
+    for name in ["High Slots", "Mid Slots", "Low Slots", "Rigs", "Cargo", "Drone Bay", "Other"]:
         if fittings_map.get(name):
             fitting_groups.append((name, fittings_map[name]))
 
-    # ---- MVP name resolution (capped)
-    type_names: dict[int, str] = {}
-    char_names: dict[int, str] = {}
+    # ---- Cached type name lookups (bounded, warms over time)
+    from .esi import get_type_names_cached  # local import avoids circular surprises
 
-    try:
-        from .esi import fetch_type_name, fetch_character_name
-    except Exception:
-        fetch_type_name = None
-        fetch_character_name = None
-
-    # Collect unique type_ids from items + attacker ships/weapons + victim ship
-    type_ids: set[int] = set()
+    item_type_ids = []
     for it in items:
         tid = it.get("item_type_id")
         if tid:
-            type_ids.add(int(tid))
+            item_type_ids.append(int(tid))
 
-    for a in attackers_top:
-        for key in ("ship_type_id", "weapon_type_id"):
-            tid = a.get(key)
-            if tid:
-                type_ids.add(int(tid))
+    type_names = get_type_names_cached(item_type_ids, fetch_cap=40)
 
-    if claim.ship_type_id:
-        type_ids.add(int(claim.ship_type_id))
+    # ---- Flag-only checks (no name resolution)
+    npc_count = 0
+    player_count = 0
+    npc_damage = 0
+    player_damage = 0
 
-    # Cap to avoid slow pages
-    type_ids_list = list(type_ids)[:40]
+    cfg = SRPConfig.get()
+    blue_alliance_ids = set(
+        int(x) for x in (cfg.blue_alliance_ids or []) if str(x).isdigit()
+    )
+    blue_corp_ids = set(
+        int(x) for x in (cfg.blue_corp_ids or []) if str(x).isdigit()
+    )
 
-    if fetch_type_name:
-        for tid in type_ids_list:
-            try:
-                name = fetch_type_name(int(tid))
-                if name:
-                    type_names[int(tid)] = name
-            except Exception:
-                pass
+    blue_involved = False
 
-    # Collect unique character_ids (top attackers + victim) and resolve (cap)
-    char_ids: set[int] = set()
-    for a in attackers_top:
-        cid = a.get("character_id")
-        if cid:
-            char_ids.add(int(cid))
+    for a in attackers:
+        dmg = int(a.get("damage_done") or 0)
+        char_id = a.get("character_id")
 
-    if claim.victim_character_id:
-        char_ids.add(int(claim.victim_character_id))
+        if char_id:
+            player_count += 1
+            player_damage += dmg
 
-    char_ids_list = list(char_ids)[:15]
+            alliance_id = a.get("alliance_id")
+            corp_id = a.get("corporation_id")
+            if (alliance_id and int(alliance_id) in blue_alliance_ids) or (
+                corp_id and int(corp_id) in blue_corp_ids
+            ):
+                blue_involved = True
+        else:
+            npc_count += 1
+            npc_damage += dmg
 
-    if fetch_character_name:
-        for cid in char_ids_list:
-            try:
-                name = fetch_character_name(int(cid))
-                if name:
-                    char_names[int(cid)] = name
-            except Exception:
-                pass
+    total_damage = npc_damage + player_damage
+    npc_damage_pct = round((npc_damage / total_damage) * 100, 1) if total_damage else 0.0
+    player_damage_pct = round((player_damage / total_damage) * 100, 1) if total_damage else 0.0
+
+    npc_only = player_count == 0 and npc_count > 0
+    npc_present = npc_count > 0
 
     return render(
         request,
@@ -366,9 +403,17 @@ def claim_detail(request, claim_id: int):
             "victim": victim,
             "items": items,
             "fitting_groups": fitting_groups,
-            "attackers": attackers_top,
-            "final_blow": final_blow,
             "type_names": type_names,
-            "char_names": char_names,
+            "npc_only": npc_only,
+            "npc_present": npc_present,
+            "blue_involved": blue_involved,
+            "npc_count": npc_count,
+            "player_count": player_count,
+            "npc_damage": npc_damage,
+            "player_damage": player_damage,
+            "npc_damage_pct": npc_damage_pct,
+            "player_damage_pct": player_damage_pct,
         },
     )
+
+

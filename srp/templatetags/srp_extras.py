@@ -1,4 +1,4 @@
-from django import template
+from django import template  # pyright: ignore[reportMissingModuleSource]
 
 register = template.Library()
 
