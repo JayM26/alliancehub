@@ -15,10 +15,14 @@ class User(AbstractUser):
     )
 
     def get_main_character(self):
-        """
-        Return the user's main character.
-        Falls back to their first linked character if none set.
-        """
         if self.main_character:
             return self.main_character
         return self.eve_characters.first()
+
+    def get_corp_name(self) -> str:
+        ch = self.get_main_character()
+        return (getattr(ch, "corporation_name", None) or "Unknown").strip()
+
+    def get_alliance_name(self) -> str:
+        ch = self.get_main_character()
+        return (getattr(ch, "alliance_name", None) or "Unknown").strip()

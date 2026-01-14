@@ -1,6 +1,6 @@
 import re  # pyright: ignore[reportMissingModuleSource]
 from django import forms  # pyright: ignore[reportMissingModuleSource]
-from .models import SRPClaim  # pyright: ignore[reportMissingModuleSource]
+from .models import SRPClaim, ShipPayout  # pyright: ignore[reportMissingModuleSource]
 
 
 class SRPClaimForm(forms.ModelForm):
@@ -35,3 +35,23 @@ class SRPClaimForm(forms.ModelForm):
                 "Broadcast/Op Post is required for Strategic or Peacetime claims."
             )
         return cleaned
+
+
+class ShipPayoutForm(forms.ModelForm):
+    class Meta:
+        model = ShipPayout
+        fields = [
+            "ship_name",
+            "strategic",
+            "peacetime",
+            "shitstack",
+            "tnt_special",
+            "hull_contract",
+        ]
+        widgets = {
+            "ship_name": forms.TextInput(attrs={"class": "form-control"}),
+            "strategic": forms.NumberInput(attrs={"class": "form-control"}),
+            "peacetime": forms.NumberInput(attrs={"class": "form-control"}),
+            "shitstack": forms.NumberInput(attrs={"class": "form-control"}),
+            "tnt_special": forms.NumberInput(attrs={"class": "form-control"}),
+        }

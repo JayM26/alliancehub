@@ -3,17 +3,32 @@ from django.contrib.auth.decorators import (  # pyright: ignore[reportMissingMod
     login_required,
     permission_required,
 )
-from django.db.models import Q  # pyright: ignore[reportMissingModuleSource]
+from django.db.models import (  # pyright: ignore[reportMissingModuleSource]
+    Q,
+    Count,
+    Sum,
+    Min,
+    Max,
+)
 from django.shortcuts import (  # pyright: ignore[reportMissingModuleSource]
     get_object_or_404,
     redirect,
     render,
 )
+from django.db.models.functions import (  # pyright: ignore[reportMissingModuleSource]
+    Coalesce,
+)
 from django.utils import timezone  # pyright: ignore[reportMissingModuleSource]
 
 from .esi import populate_claim_from_esi, fetch_type_name, get_type_names_cached
-from .forms import SRPClaimForm
-from .models import ClaimReview, SRPClaim, ShipPayout, SRPConfig
+from .forms import SRPClaimForm, ShipPayoutForm
+from .models import ClaimReview, SRPClaim, ShipPayout, SRPConfig, PayoutImportJob
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+import csv
+import io
+import re
+from django.db import transaction  # pyright: ignore[reportMissingModuleSource]
 
 
 @login_required
@@ -336,7 +351,15 @@ def claim_detail(request, claim_id: int):
         fittings_map[_slot_group(flag)].append(it)
 
     fitting_groups = []
-    for name in ["High Slots", "Mid Slots", "Low Slots", "Rigs", "Cargo", "Drone Bay", "Other"]:
+    for name in [
+        "High Slots",
+        "Mid Slots",
+        "Low Slots",
+        "Rigs",
+        "Cargo",
+        "Drone Bay",
+        "Other",
+    ]:
         if fittings_map.get(name):
             fitting_groups.append((name, fittings_map[name]))
 
@@ -361,9 +384,7 @@ def claim_detail(request, claim_id: int):
     blue_alliance_ids = set(
         int(x) for x in (cfg.blue_alliance_ids or []) if str(x).isdigit()
     )
-    blue_corp_ids = set(
-        int(x) for x in (cfg.blue_corp_ids or []) if str(x).isdigit()
-    )
+    blue_corp_ids = set(int(x) for x in (cfg.blue_corp_ids or []) if str(x).isdigit())
 
     blue_involved = False
 
@@ -386,8 +407,12 @@ def claim_detail(request, claim_id: int):
             npc_damage += dmg
 
     total_damage = npc_damage + player_damage
-    npc_damage_pct = round((npc_damage / total_damage) * 100, 1) if total_damage else 0.0
-    player_damage_pct = round((player_damage / total_damage) * 100, 1) if total_damage else 0.0
+    npc_damage_pct = (
+        round((npc_damage / total_damage) * 100, 1) if total_damage else 0.0
+    )
+    player_damage_pct = (
+        round((player_damage / total_damage) * 100, 1) if total_damage else 0.0
+    )
 
     npc_only = player_count == 0 and npc_count > 0
     npc_present = npc_count > 0
@@ -417,3 +442,504 @@ def claim_detail(request, claim_id: int):
     )
 
 
+def _range_from_preset(preset: str):
+    """
+    Returns (start_dt, end_dt_exclusive, label)
+    start inclusive, end exclusive.
+    """
+    tz = timezone.get_current_timezone()
+    today = timezone.localdate()
+
+    preset = (preset or "this_week").lower()
+
+    if preset == "today":
+        start_d = today
+        end_d = today + timedelta(days=1)
+        label = "today"
+    elif preset == "this_week":
+        start_d = today - timedelta(days=today.weekday())  # Monday
+        end_d = start_d + timedelta(days=7)
+        label = "this week"
+    elif preset == "this_month":
+        start_d = today.replace(day=1)
+        if start_d.month == 12:
+            end_d = date(start_d.year + 1, 1, 1)
+        else:
+            end_d = date(start_d.year, start_d.month + 1, 1)
+        label = "this month"
+    elif preset == "last_month":
+        this_month_start = today.replace(day=1)
+        if this_month_start.month == 1:
+            start_d = date(this_month_start.year - 1, 12, 1)
+        else:
+            start_d = date(this_month_start.year, this_month_start.month - 1, 1)
+        end_d = this_month_start
+        label = "last month"
+    elif preset == "this_year":
+        start_d = date(today.year, 1, 1)
+        end_d = date(today.year + 1, 1, 1)
+        label = "this year"
+    elif preset == "last_year":
+        start_d = date(today.year - 1, 1, 1)
+        end_d = date(today.year, 1, 1)
+        label = "last year"
+    else:
+        # fallback: last 7 days
+        start_d = today - timedelta(days=6)
+        end_d = today + timedelta(days=1)
+        label = "last 7 days"
+
+    start_dt = timezone.make_aware(datetime.combine(start_d, datetime.min.time()), tz)
+    end_dt = timezone.make_aware(datetime.combine(end_d, datetime.min.time()), tz)
+    return start_dt, end_dt, label
+
+
+def _range_from_custom(start_str: str | None, end_str: str | None):
+    """
+    Custom range from GET params start/end in YYYY-MM-DD.
+    End is inclusive in UI; we convert to end-exclusive internally.
+    Returns (start_dt, end_dt_exclusive, label) or None if invalid/missing.
+    """
+    if not start_str or not end_str:
+        return None
+
+    try:
+        start_d = date.fromisoformat(start_str)
+        end_d_inclusive = date.fromisoformat(end_str)
+    except ValueError:
+        return None
+
+    if end_d_inclusive < start_d:
+        return None
+
+    tz = timezone.get_current_timezone()
+    start_dt = timezone.make_aware(datetime.combine(start_d, datetime.min.time()), tz)
+    end_dt = timezone.make_aware(
+        datetime.combine(end_d_inclusive + timedelta(days=1), datetime.min.time()), tz
+    )
+    label = f"{start_d.isoformat()} → {end_d_inclusive.isoformat()}"
+    return start_dt, end_dt, label
+
+
+@login_required
+@permission_required("srp.can_view_srp_reports", raise_exception=True)
+def admin_overview(request):
+    """
+    SRP Admin Overview (read-only):
+    - Status summary (Paid/Approved/Pending/Denied order)
+    - Queue health (pending aging)
+    - Paid breakdown toggles (category / submitter corp / reviewer)
+    - Time presets + custom start/end (inclusive end date)
+    """
+
+    # --- timeframe: custom overrides preset
+    preset = request.GET.get("t", "this_week")
+    start_str = request.GET.get("start")
+    end_str = request.GET.get("end")
+
+    custom = _range_from_custom(start_str, end_str)
+    if custom:
+        start_dt, end_dt, time_label = custom
+        using_custom = True
+    else:
+        start_dt, end_dt, time_label = _range_from_preset(preset)
+        using_custom = False
+
+    # what to group paid by
+    paid_by = (request.GET.get("paid_by") or "category").lower()
+    if paid_by not in {"category", "corp", "reviewer"}:
+        paid_by = "category"
+
+    qs = SRPClaim.objects.select_related("ship", "submitter", "reviewer")
+
+    # --- STATUS SUMMARY (in window: submitted_at)
+    recent = qs.filter(submitted_at__gte=start_dt, submitted_at__lt=end_dt)
+
+    status_summary_qs = recent.values("status").annotate(
+        count=Count("id"),
+        isk=Coalesce(Sum("payout_amount"), Decimal("0")),
+    )
+
+    # order: Paid / Approved / Pending / Denied
+    status_order = {"PAID": 0, "APPROVED": 1, "PENDING": 2, "DENIED": 3}
+    status_summary = sorted(
+        list(status_summary_qs),
+        key=lambda r: status_order.get(r["status"], 99),
+    )
+
+    # --- QUEUE HEALTH (Pending overall)
+    pending_qs = qs.filter(status="PENDING")
+    oldest_pending = pending_qs.order_by("submitted_at").first()
+
+    now = timezone.now()
+    pending_7d = pending_qs.filter(submitted_at__lt=now - timedelta(days=7)).count()
+    pending_14d = pending_qs.filter(submitted_at__lt=now - timedelta(days=14)).count()
+
+    oldest_pending_list = pending_qs.order_by("submitted_at")[:10]
+
+    # --- REVIEWER ACTIVITY (window: review timestamp)
+    reviewer_activity = (
+        ClaimReview.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt)
+        .values("reviewer__username")
+        .annotate(actions=Count("id"), last_action=Max("timestamp"))
+        .order_by("-actions", "-last_action")
+    )
+
+    # --- PAID BREAKDOWN (window: paid_at)
+    paid_qs = qs.filter(status="PAID", paid_at__gte=start_dt, paid_at__lt=end_dt)
+
+    paid_title = "Paid breakdown"
+    paid_breakdown_rows = []
+
+    if paid_by == "category":
+        paid_title = "Paid by SRP Category"
+        paid_breakdown_rows = list(
+            paid_qs.values("category")
+            .annotate(
+                count=Count("id"),
+                isk=Coalesce(Sum("payout_amount"), Decimal("0")),
+            )
+            .order_by("-isk", "-count")
+        )
+        for r in paid_breakdown_rows:
+            r["label"] = r.get("category") or "Unknown"
+
+    elif paid_by == "reviewer":
+        paid_title = "Paid by Reviewer"
+        paid_breakdown_rows = list(
+            paid_qs.values("reviewer__username")
+            .annotate(
+                count=Count("id"),
+                isk=Coalesce(Sum("payout_amount"), Decimal("0")),
+            )
+            .order_by("-isk", "-count")
+        )
+        for r in paid_breakdown_rows:
+            r["label"] = r.get("reviewer__username") or "Unknown"
+
+    elif paid_by == "corp":
+        paid_title = "Paid by Submitter Corp"
+        # Best-effort in Python, using accounts.User.get_corp_name()
+        agg = {}  # corp -> {"count": int, "isk": Decimal}
+        for c in paid_qs.select_related("submitter").iterator():
+            submitter = c.submitter
+            corp = submitter.get_corp_name() if submitter else "Unknown"
+            corp = corp or "Unknown"
+
+            if corp not in agg:
+                agg[corp] = {"count": 0, "isk": Decimal("0")}
+            agg[corp]["count"] += 1
+            agg[corp]["isk"] += c.payout_amount or Decimal("0")
+
+        paid_breakdown_rows = [
+            {"label": corp, "count": data["count"], "isk": data["isk"]}
+            for corp, data in agg.items()
+        ]
+        paid_breakdown_rows.sort(key=lambda r: (r["isk"], r["count"]), reverse=True)
+
+    context = {
+        # time controls
+        "preset": preset,
+        "using_custom": using_custom,
+        "start": start_str or "",
+        "end": end_str or "",
+        "time_label": time_label,
+        # status + queue
+        "status_summary": status_summary,
+        "oldest_pending": oldest_pending,
+        "oldest_pending_list": oldest_pending_list,
+        "pending_7d": pending_7d,
+        "pending_14d": pending_14d,
+        # reviewer + paid breakdown
+        "reviewer_activity": reviewer_activity,
+        "paid_by": paid_by,
+        "paid_title": paid_title,
+        "paid_breakdown": paid_breakdown_rows,
+    }
+
+    return render(request, "srp/admin/overview.html", context)
+
+
+@login_required
+@permission_required("srp.can_manage_srp_payouts", raise_exception=True)
+def admin_payouts(request):
+    q = (request.GET.get("q") or "").strip()
+
+    ships = ShipPayout.objects.all()
+    if q:
+        ships = ships.filter(ship_name__icontains=q)
+
+    ships = ships.order_by("ship_name")[:500]
+
+    return render(request, "srp/admin/payouts_list.html", {"ships": ships, "q": q})
+
+
+@login_required
+@permission_required("srp.can_manage_srp_payouts", raise_exception=True)
+def admin_payout_new(request):
+    if request.method == "POST":
+        form = ShipPayoutForm(request.POST)
+        if form.is_valid():
+            ship = form.save()
+            messages.success(request, f"Created payout record for {ship.ship_name}.")
+            return redirect("srp:admin_payouts")
+        messages.error(request, "Please correct the errors below.")
+    else:
+        form = ShipPayoutForm()
+
+    return render(request, "srp/admin/payout_edit.html", {"form": form, "is_new": True})
+
+
+@login_required
+@permission_required("srp.can_manage_srp_payouts", raise_exception=True)
+def admin_payout_edit(request, ship_id: int):
+    ship = get_object_or_404(ShipPayout, id=ship_id)
+
+    if request.method == "POST":
+        form = ShipPayoutForm(request.POST, instance=ship)
+        if form.is_valid():
+            form.save()
+            messages.success(request, f"Updated payouts for {ship.ship_name}.")
+            return redirect("srp:admin_payouts")
+        messages.error(request, "Please correct the errors below.")
+    else:
+        form = ShipPayoutForm(instance=ship)
+
+    return render(
+        request,
+        "srp/admin/payout_edit.html",
+        {"form": form, "is_new": False, "ship": ship},
+    )
+
+
+def _parse_bool(value) -> bool:
+    """
+    Accepts:
+      1
+      "1"
+      "1 (anything...)"
+      "0 (anything...)"
+      "true", "yes", "y", "t"
+      ""
+    """
+    if value is None:
+        return False
+
+    s = str(value).strip().replace("\xa0", " ")  # handle NBSP from Excel
+    if not s:
+        return False
+
+    # If there’s a leading 0/1 anywhere, use that
+    m = re.search(r"\b([01])\b", s)
+    if m:
+        return m.group(1) == "1"
+
+    s_lower = s.lower()
+    return s_lower in {"true", "yes", "y", "t"}
+
+
+def _parse_isk(value) -> Decimal:
+    """
+    Accepts:
+      200000000
+      "200,000,000"
+      "200,000,000 (325,787,715)"
+      "" / None
+    Uses the first number chunk and ignores anything after (like parentheses).
+    """
+    if value is None:
+        return Decimal("0")
+
+    s = str(value).strip().replace("\xa0", " ")
+    if not s:
+        return Decimal("0")
+
+    m = re.search(r"[\d,]+", s)
+    if not m:
+        return Decimal("0")
+
+    return Decimal(m.group(0).replace(",", ""))
+
+
+def _dec_to_str(d: Decimal | None) -> str:
+    # keep it simple for hidden fields
+    return str(d if d is not None else Decimal("0"))
+
+
+def _get_cell(row: dict, key: str):
+    # exact match first
+    if key in row:
+        return row.get(key)
+    # fallback: strip whitespace from headers
+    for k, v in row.items():
+        if (k or "").strip().lower() == key.strip().lower():
+            return v
+    return None
+
+
+@login_required
+@permission_required("srp.can_manage_srp_payouts", raise_exception=True)
+def admin_payouts_bulk(request):
+    if request.method != "POST":
+        return render(request, "srp/admin/payouts_bulk_upload.html")
+
+    f = request.FILES.get("file")
+    if not f:
+        messages.error(request, "Please choose a CSV file to upload.")
+        return render(request, "srp/admin/payouts_bulk_upload.html")
+
+    try:
+        raw = f.read().decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raw = f.read().decode("latin-1")
+
+    # Store server-side so we don't POST it back
+    job = PayoutImportJob.objects.create(
+        created_by=request.user,
+        csv_text=raw,
+        original_filename=getattr(f, "name", "") or "",
+    )
+
+    # Build preview using the same parsing logic, but from job.csv_text
+    reader = csv.DictReader(io.StringIO(job.csv_text))
+    preview_rows = []
+    errors = []
+
+    for i, row in enumerate(reader):
+        ship_name = (row.get("Ship Name") or row.get("ship_name") or "").strip()
+        if not ship_name:
+            errors.append(f"Row {i+2}: missing Ship Name")
+            continue
+
+        strategic = _parse_isk(row.get("Strategic"))
+        peacetime = _parse_isk(row.get("Peacetime"))
+        shitstack = _parse_isk(row.get("Shit Stack"))
+        tnt_special = _parse_isk(row.get("TNT Special"))
+        capital_flag = _parse_bool(_get_cell(row, "Capital"))
+        hull_contract = capital_flag or _parse_bool(row.get("HullContract"))
+
+        existing = ShipPayout.objects.filter(ship_name__iexact=ship_name).first()
+        if not existing:
+            preview_rows.append(
+                {
+                    "ship_name": ship_name,
+                    "action": "CREATE",
+                    "new": {
+                        "strategic": strategic,
+                        "peacetime": peacetime,
+                        "shitstack": shitstack,
+                        "tnt_special": tnt_special,
+                        "hull_contract": hull_contract,
+                    },
+                    "diffs": [],
+                }
+            )
+            continue
+
+        diffs = []
+
+        def _diff(field, old, new):
+            if old != new:
+                diffs.append({"field": field, "old": old, "new": new})
+
+        _diff("strategic", existing.strategic, strategic)
+        _diff("peacetime", existing.peacetime, peacetime)
+        _diff("shitstack", existing.shitstack, shitstack)
+        _diff("tnt_special", existing.tnt_special, tnt_special)
+        _diff("hull_contract", existing.hull_contract, hull_contract)
+
+        preview_rows.append(
+            {
+                "ship_name": ship_name,
+                "action": "UPDATE" if diffs else "NO_CHANGE",
+                "new": {
+                    "strategic": strategic,
+                    "peacetime": peacetime,
+                    "shitstack": shitstack,
+                    "tnt_special": tnt_special,
+                    "hull_contract": hull_contract,
+                },
+                "diffs": diffs,
+            }
+        )
+
+    # Hide NO_CHANGE rows (since you asked not to display them),
+    # but keep counts so the page can explain "why nothing is showing".
+    creates = sum(1 for r in preview_rows if r["action"] == "CREATE")
+    updates = sum(1 for r in preview_rows if r["action"] == "UPDATE")
+    nochange = sum(1 for r in preview_rows if r["action"] == "NO_CHANGE")
+
+    preview_rows = [r for r in preview_rows if r["action"] != "NO_CHANGE"]
+
+    return render(
+        request,
+        "srp/admin/payouts_bulk_preview.html",
+        {
+            "job": job,
+            "preview_rows": preview_rows,
+            "errors": errors,
+            "creates": creates,
+            "updates": updates,
+            "nochange": nochange,
+        },
+    )
+
+
+@login_required
+@permission_required("srp.can_manage_srp_payouts", raise_exception=True)
+def admin_payouts_bulk_apply(request):
+    if request.method != "POST":
+        return redirect("srp:admin_payouts_bulk")
+
+    job_id = request.POST.get("job_id")
+    job = get_object_or_404(PayoutImportJob, id=job_id, created_by=request.user)
+
+    excluded = {
+        x.strip().lower()
+        for x in (request.POST.getlist("exclude_ship") or [])
+        if x and x.strip()
+    }
+
+    reader = csv.DictReader(io.StringIO(job.csv_text))
+
+    created = updated = skipped = errors = 0
+
+    with transaction.atomic():
+        for row in reader:
+            ship_name = (row.get("Ship Name") or row.get("ship_name") or "").strip()
+            if not ship_name:
+                errors += 1
+                continue
+
+            if ship_name.lower() in excluded:
+                skipped += 1
+                continue
+
+            capital_flag = _parse_bool(_get_cell(row, "Capital"))
+            hull_contract = capital_flag or _parse_bool(_get_cell(row, "HullContract"))
+
+            defaults = {
+                "strategic": _parse_isk(row.get("Strategic")),
+                "peacetime": _parse_isk(row.get("Peacetime")),
+                "shitstack": _parse_isk(row.get("Shit Stack")),
+                "tnt_special": _parse_isk(row.get("TNT Special")),
+                "hull_contract": hull_contract,
+            }
+
+            _, was_created = ShipPayout.objects.update_or_create(
+                ship_name=ship_name,
+                defaults=defaults,
+            )
+            if was_created:
+                created += 1
+            else:
+                updated += 1
+
+    # Optional: clean up old jobs (or keep for audit)
+    job.delete()
+
+    messages.success(
+        request,
+        f"Bulk payout import complete. Created: {created}, Updated: {updated}, Skipped: {skipped}, Errors: {errors}.",
+    )
+    return redirect("srp:admin_payouts")

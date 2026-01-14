@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% load humanize %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
+  <div>
+    <h2 class="mb-1">Bulk Import Preview</h2>
+    <div class="text-secondary">Check any ships you would like to exclude from the important and don’t want to apply, then click Apply.</div>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary btn-sm" href="{% url 'srp:admin_payouts_bulk' %}">Upload another</a>
+    <a class="btn btn-outline-secondary btn-sm" href="{% url 'srp:admin_payouts' %}">Back</a>
+  </div>
+</div>
+
+{% if errors %}
+  <div class="alert alert-warning">
+    <strong>Skipped rows:</strong>
+    <ul class="mb-0">
+      {% for e in errors %}
+        <li>{{ e }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+{% endif %}
+
+<div class="text-secondary small mb-2">
+  Parsed: {{ creates|default:0 }} creates · {{ updates|default:0 }} updates · {{ nochange|default:0 }} unchanged
+</div>
+
+{% if preview_rows|length == 0 %}
+  <div class="alert alert-info mb-0">
+    No changes detected (everything matched your current database).
+  </div>
+{% endif %}
+
+<form method="post" action="{% url 'srp:admin_payouts_bulk_apply' %}">
+  {% csrf_token %}
+  <input type="hidden" name="job_id" value="{{ job.id }}">
+
+  <div class="card bg-dark border-secondary">
+    <div class="card-header border-secondary d-flex justify-content-between align-items-center flex-wrap gap-2">
+      <div>
+        <strong>Changes</strong>
+        <span class="text-secondary small">({{ preview_rows|length }} rows parsed)</span>
+      </div>
+      <div class="d-flex gap-2">
+        <button class="btn btn-outline-info btn-sm" type="submit">Apply</button>
+      </div>
+    </div>
+
+    <div class="card-body">
+      <div class="table-responsive">
+        <table class="table table-sm table-dark table-striped align-middle mb-0">
+          <thead>
+            <tr>
+              <th style="width: 1%;">Exclude</th>
+              <th>Ship</th>
+              <th>Action</th>
+              <th>Diffs</th>
+            </tr>
+          </thead>
+            <tbody>
+            {% for r in preview_rows %}
+                {% if r.action != "NO_CHANGE" %}
+                <tr>
+                    <td class="text-center">
+                    <input type="checkbox" name="exclude_ship" value="{{ r.ship_name|escape }}">
+                    </td>
+
+                    <td class="text-nowrap">{{ r.ship_name }}</td>
+
+                    <td>
+                    {% if r.action == "CREATE" %}
+                        <span class="badge text-bg-info">CREATE</span>
+                    {% elif r.action == "UPDATE" %}
+                        <span class="badge text-bg-warning">UPDATE</span>
+                    {% endif %}
+                    </td>
+
+                    <td>
+                    {% if r.action == "CREATE" %}
+                        <span class="text-secondary small">
+                        New record: {{ r.new.strategic|floatformat:0|intcomma }},
+                        {{ r.new.peacetime|floatformat:0|intcomma }},
+                        {{ r.new.shitstack|floatformat:0|intcomma }},
+                        {{ r.new.tnt_special|floatformat:0|intcomma }},
+                        hull={{ r.new.hull_contract }}
+                        </span>
+                    {% else %}
+                        <div class="small">
+                        {% for d in r.diffs %}
+                            <div>
+                            <span class="text-secondary">{{ d.field }}</span>:
+                            <span class="text-secondary">{{ d.old }}</span>
+                            → <strong>{{ d.new }}</strong>
+                            </div>
+                        {% endfor %}
+                        </div>
+                    {% endif %}
+                    </td>
+                </tr>
+                {% endif %}
+            {% endfor %}
+            </tbody>
+
+        </table>
+      </div>
+
+      <div class="text-secondary small mt-2">
+        Tip: Check any ships you want to exclude from the import, then click <strong>Apply</strong> in the upper right.
+      </div>
+    </div>
+  </div>
+</form>
+{% endblock %}

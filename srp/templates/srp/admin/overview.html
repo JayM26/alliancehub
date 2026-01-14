@@ -1,0 +1,287 @@
+{% extends "base.html" %}
+{% load humanize %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
+  <div>
+    <h2 class="mb-1">SRP Admin Overview</h2>
+    <div class="text-secondary">
+      Active timeframe: <strong class="text-light">{{ time_label }}</strong>
+      {% if using_custom %}<span class="ms-2 badge text-bg-info">custom</span>{% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- Time controls -->
+<div class="d-flex flex-wrap gap-3 align-items-end mb-3">
+  <div>
+    <div class="text-secondary small">Presets</div>
+    <div class="d-flex flex-wrap gap-2">
+      <a class="btn btn-outline-secondary btn-sm {% if not using_custom and preset == 'today' %}active{% endif %}"
+         href="?t=today&paid_by={{ paid_by }}">Today</a>
+
+      <a class="btn btn-outline-secondary btn-sm {% if not using_custom and preset == 'this_week' %}active{% endif %}"
+         href="?t=this_week&paid_by={{ paid_by }}">This week</a>
+
+      <a class="btn btn-outline-secondary btn-sm {% if not using_custom and preset == 'this_month' %}active{% endif %}"
+         href="?t=this_month&paid_by={{ paid_by }}">This month</a>
+
+      <a class="btn btn-outline-secondary btn-sm {% if not using_custom and preset == 'last_month' %}active{% endif %}"
+         href="?t=last_month&paid_by={{ paid_by }}">Last month</a>
+
+      <a class="btn btn-outline-secondary btn-sm {% if not using_custom and preset == 'this_year' %}active{% endif %}"
+         href="?t=this_year&paid_by={{ paid_by }}">This year</a>
+
+      <a class="btn btn-outline-secondary btn-sm {% if not using_custom and preset == 'last_year' %}active{% endif %}"
+         href="?t=last_year&paid_by={{ paid_by }}">Last year</a>
+    </div>
+  </div>
+
+  <form method="get" class="d-flex flex-wrap gap-2 align-items-end">
+    <input type="hidden" name="paid_by" value="{{ paid_by }}">
+    <div>
+      <label class="text-secondary small">Start</label>
+      <input type="date" name="start" value="{{ start }}" class="form-control form-control-sm">
+    </div>
+    <div>
+      <label class="text-secondary small">End</label>
+      <input type="date" name="end" value="{{ end }}" class="form-control form-control-sm">
+    </div>
+    <button class="btn btn-outline-info btn-sm" type="submit">Apply</button>
+  </form>
+</div>
+
+<div class="row g-3 align-items-stretch">
+  <!-- LEFT COLUMN: date-specific, full height stack -->
+  <div class="col-lg-6 d-flex flex-column">
+    <!-- Status Summary (natural height) -->
+    <div class="card bg-dark border-secondary mb-3">
+      <div class="card-header border-secondary">
+        <strong>Status Summary</strong>
+        <span class="text-secondary small">(submitted_at in timeframe)</span>
+      </div>
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table table-sm table-dark table-striped align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th class="text-end">Claims</th>
+                <th class="text-end">Total Payout</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in status_summary %}
+                <tr>
+                  <td><span class="badge text-bg-secondary">{{ row.status }}</span></td>
+                  <td class="text-end">{{ row.count|intcomma }}</td>
+                  <td class="text-end">
+                    {{ row.isk|default:0|floatformat:0|intcomma }}
+                    <span class="text-secondary small">ISK</span>
+                  </td>
+                </tr>
+              {% empty %}
+                <tr><td colspan="3" class="text-secondary">No claims in this window.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="text-secondary small mt-2">
+          Totals are based on <code>payout_amount</code>.
+        </div>
+      </div>
+    </div>
+
+    <!-- Paid Breakdown (stretches to fill remaining height) -->
+    <div class="card bg-dark border-secondary flex-grow-1 d-flex flex-column">
+      <div class="card-header border-secondary d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+          <strong>{{ paid_title }}</strong>
+          <span class="text-secondary small">(paid_at in timeframe)</span>
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+          {% if using_custom %}
+            <a class="btn btn-outline-secondary btn-sm {% if paid_by == 'category' %}active{% endif %}"
+               href="?paid_by=category&start={{ start }}&end={{ end }}">SRP Category</a>
+            <a class="btn btn-outline-secondary btn-sm {% if paid_by == 'corp' %}active{% endif %}"
+               href="?paid_by=corp&start={{ start }}&end={{ end }}">Corps</a>
+            <a class="btn btn-outline-secondary btn-sm {% if paid_by == 'reviewer' %}active{% endif %}"
+               href="?paid_by=reviewer&start={{ start }}&end={{ end }}">Reviewer</a>
+          {% else %}
+            <a class="btn btn-outline-secondary btn-sm {% if paid_by == 'category' %}active{% endif %}"
+               href="?t={{ preset }}&paid_by=category">SRP Category</a>
+            <a class="btn btn-outline-secondary btn-sm {% if paid_by == 'corp' %}active{% endif %}"
+               href="?t={{ preset }}&paid_by=corp">Corps</a>
+            <a class="btn btn-outline-secondary btn-sm {% if paid_by == 'reviewer' %}active{% endif %}"
+               href="?t={{ preset }}&paid_by=reviewer">Reviewer</a>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- KEY: body is a flex column, table wrapper grows -->
+      <div class="card-body d-flex flex-column">
+        <div class="table-responsive flex-grow-1">
+          <table class="table table-sm table-dark table-striped align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Group</th>
+                <th class="text-end">Paid</th>
+                <th class="text-end">Total ISK</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in paid_breakdown %}
+                <tr>
+                  <td>{{ r.label }}</td>
+                  <td class="text-end">{{ r.count|intcomma }}</td>
+                  <td class="text-end">
+                    {{ r.isk|default:0|floatformat:0|intcomma }}
+                    <span class="text-secondary small">ISK</span>
+                  </td>
+                </tr>
+              {% empty %}
+                <tr><td colspan="3" class="text-secondary">No paid claims in this window.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        {% if paid_by == "corp" %}
+          <div class="text-secondary small mt-2">
+            Corp is pulled from submitter’s main character (accounts.User.get_corp_name()).
+            Accounts without a linked character show as <code>Unknown</code>.
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT COLUMN: Queue Health full column -->
+  <div class="col-lg-6 d-flex">
+    <div class="card bg-dark border-secondary h-100 w-100">
+      <div class="card-header border-secondary">
+        <strong>Queue Health</strong>
+        <span class="text-secondary small">(Pending overall)</span>
+      </div>
+      <div class="card-body">
+        <div class="row g-2 small">
+          <div class="col-6">
+            <div class="text-secondary">Oldest pending</div>
+            <div>
+              {% if oldest_pending %}
+                <strong>{{ oldest_pending.submitted_at|timesince }} ago</strong>
+                <div class="text-secondary small">{{ oldest_pending.submitted_at|date:"Y-m-d H:i" }}</div>
+              {% else %}
+                <span class="text-secondary">None 🎉</span>
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="col-6">
+            <div class="text-secondary">Pending aging</div>
+            <div class="d-flex flex-wrap gap-2 mt-1">
+              <span class="badge text-bg-warning">&gt; 7d: {{ pending_7d|intcomma }}</span>
+              <span class="badge text-bg-warning">&gt; 14d: {{ pending_14d|intcomma }}</span>
+            </div>
+          </div>
+        </div>
+
+        <hr class="border-secondary"/>
+
+        <div class="d-flex justify-content-between align-items-center">
+          <strong>Oldest Pending Claims</strong>
+          <span class="text-secondary small">{{ oldest_pending_list|length }} shown</span>
+        </div>
+
+        <div class="table-responsive mt-2">
+          <table class="table table-sm table-dark table-striped align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Age</th>
+                <th>Pilot</th>
+                <th>Ship</th>
+                <th class="text-end">Payout</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for c in oldest_pending_list %}
+                <tr>
+                  <td class="text-nowrap">{{ c.submitted_at|timesince }} ago</td>
+                  <td class="text-nowrap">{{ c.character_name }}</td>
+                  <td>
+                    {% if c.ship %}{{ c.ship.ship_name }}
+                    {% elif c.ship_name %}{{ c.ship_name }}
+                    {% else %}<span class="text-secondary">—</span>
+                    {% endif %}
+                    {% if c.solar_system_name %}
+                      <div class="text-secondary small">{{ c.solar_system_name }}</div>
+                    {% elif c.system %}
+                      <div class="text-secondary small">{{ c.system }}</div>
+                    {% endif %}
+                  </td>
+                  <td class="text-end text-nowrap">
+                    {{ c.payout_amount|default:0|floatformat:0|intcomma }}
+                    <span class="text-secondary small">ISK</span>
+                  </td>
+                  <td class="text-end">
+                    <a class="btn btn-outline-info btn-sm"
+                       href="{% url 'srp:claim_detail' c.id %}">
+                      View
+                    </a>
+                  </td>
+                </tr>
+              {% empty %}
+                <tr><td colspan="5" class="text-secondary">No pending claims.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom row: Reviewer Activity full width -->
+  <div class="col-12">
+    <div class="card bg-dark border-secondary">
+      <div class="card-header border-secondary">
+        <strong>Reviewer Activity</strong>
+        <span class="text-secondary small">(actions logged in timeframe)</span>
+      </div>
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table table-sm table-dark table-striped align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Reviewer</th>
+                <th class="text-end">Actions</th>
+                <th class="text-end">Last action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in reviewer_activity %}
+                <tr>
+                  <td class="text-nowrap">{{ r.reviewer__username|default:"Unknown" }}</td>
+                  <td class="text-end">{{ r.actions|intcomma }}</td>
+                  <td class="text-end text-nowrap">
+                    {% if r.last_action %}
+                      {{ r.last_action|timesince }} ago
+                      <div class="text-secondary small">{{ r.last_action|date:"Y-m-d H:i" }}</div>
+                    {% else %}
+                      <span class="text-secondary">—</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% empty %}
+                <tr><td colspan="3" class="text-secondary">No review actions in this window.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

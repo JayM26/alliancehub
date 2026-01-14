@@ -280,3 +280,13 @@ class ClaimReview(models.Model):
 
     def __str__(self):
         return f"{self.claim_id} - {self.action} by {self.reviewer}"
+
+
+class PayoutImportJob(models.Model):
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(default=timezone.now)
+    csv_text = models.TextField()
+    original_filename = models.CharField(max_length=255, blank=True)
+
+    def __str__(self):
+        return f"PayoutImportJob #{self.id} ({self.created_at:%Y-%m-%d %H:%M})"

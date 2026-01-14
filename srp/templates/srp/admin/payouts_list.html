@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% load humanize %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
+  <div>
+    <h2 class="mb-1">SRP Payout Admin</h2>
+    <div class="text-secondary">Manage ship payout records (single-record edits only).</div>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-info btn-sm" href="{% url 'srp:admin_payout_new' %}">Add ship</a>
+    <a class="btn btn-outline-secondary btn-sm" href="{% url 'srp:payout_table' %}">View payout table</a>
+    <a class="btn btn-outline-info btn-sm" href="{% url 'srp:admin_payouts_bulk' %}">Bulk import</a>
+  </div>
+</div>
+
+<form method="get" class="d-flex gap-2 mb-3">
+  <input class="form-control form-control-sm" name="q" value="{{ q }}" placeholder="Search ship name...">
+  <button class="btn btn-outline-secondary btn-sm" type="submit">Search</button>
+</form>
+
+<div class="card bg-dark border-secondary">
+  <div class="card-header border-secondary">
+    <strong>Ships</strong>
+    <span class="text-secondary small">({{ ships|length }} shown)</span>
+  </div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-dark table-striped align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Ship</th>
+            <th class="text-end">Strategic</th>
+            <th class="text-end">Peacetime</th>
+            <th class="text-end">Shitstack</th>
+            <th class="text-end">TNT Special</th>
+            <th>Hull</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in ships %}
+          <tr>
+            <td class="text-nowrap">{{ s.ship_name }}</td>
+            <td class="text-end">{{ s.strategic|floatformat:0|intcomma }}</td>
+            <td class="text-end">{{ s.peacetime|floatformat:0|intcomma }}</td>
+            <td class="text-end">{{ s.shitstack|floatformat:0|intcomma }}</td>
+            <td class="text-end">{{ s.tnt_special|floatformat:0|intcomma }}</td>
+            <td>{% if s.hull_contract %}<span class="badge text-bg-info">Yes</span>{% else %}<span class="text-secondary">No</span>{% endif %}</td>
+            <td class="text-end">
+              <a class="btn btn-outline-info btn-sm" href="{% url 'srp:admin_payout_edit' s.id %}">Edit</a>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="7" class="text-secondary">No ships found.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

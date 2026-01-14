@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
+  <div>
+    <h2 class="mb-1">{% if is_new %}Add Ship Payout{% else %}Edit Ship Payout{% endif %}</h2>
+    <div class="text-secondary">
+      {% if not is_new %}{{ ship.ship_name }}{% else %}Create a new payout record{% endif %}
+    </div>
+  </div>
+  <div>
+    <a class="btn btn-outline-secondary btn-sm" href="{% url 'srp:admin_payouts' %}">Back</a>
+  </div>
+</div>
+
+<div class="card bg-dark border-secondary">
+  <div class="card-header border-secondary">
+    <strong>Payout Details</strong>
+  </div>
+  <div class="card-body">
+    <form method="post" class="d-flex flex-column gap-3">
+      {% csrf_token %}
+      {{ form.non_field_errors }}
+
+      <div>
+        <label class="text-secondary small">Ship name</label>
+        {{ form.ship_name }}
+        {{ form.ship_name.errors }}
+      </div>
+
+      <div class="row g-3">
+        <div class="col-md-6">
+          <label class="text-secondary small">Strategic</label>
+          {{ form.strategic }}
+          {{ form.strategic.errors }}
+        </div>
+        <div class="col-md-6">
+          <label class="text-secondary small">Peacetime</label>
+          {{ form.peacetime }}
+          {{ form.peacetime.errors }}
+        </div>
+        <div class="col-md-6">
+          <label class="text-secondary small">Shitstack</label>
+          {{ form.shitstack }}
+          {{ form.shitstack.errors }}
+        </div>
+        <div class="col-md-6">
+          <label class="text-secondary small">TNT Special</label>
+          {{ form.tnt_special }}
+          {{ form.tnt_special.errors }}
+        </div>
+      </div>
+
+      <div class="form-check">
+        {{ form.hull_contract }}
+        <label class="form-check-label" for="{{ form.hull_contract.id_for_label }}">
+          Hull contract instead of ISK
+        </label>
+        {{ form.hull_contract.errors }}
+      </div>
+
+      <div class="d-flex gap-2">
+        <button class="btn btn-outline-info btn-sm" type="submit">Save</button>
+        <a class="btn btn-outline-secondary btn-sm" href="{% url 'srp:admin_payouts' %}">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

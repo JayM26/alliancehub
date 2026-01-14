@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
+  <div>
+    <h2 class="mb-1">Bulk Import Payouts</h2>
+    <div class="text-secondary">Upload CSV → preview changes → apply selected rows.</div>
+  </div>
+  <div>
+    <a class="btn btn-outline-secondary btn-sm" href="{% url 'srp:admin_payouts' %}">Back</a>
+  </div>
+</div>
+
+<div class="card bg-dark border-secondary">
+  <div class="card-header border-secondary">
+    <strong>Upload CSV</strong>
+  </div>
+  <div class="card-body">
+    <form method="post" enctype="multipart/form-data" class="d-flex flex-column gap-3">
+      {% csrf_token %}
+      <input class="form-control form-control-sm" type="file" name="file" accept=".csv">
+
+      <div class="text-secondary small">
+        Expected columns: <code>Ship Name</code>, <code>Strategic</code>, <code>Peacetime</code>, <code>Shit Stack</code>, <code>HullContract</code>.
+        Extra columns are ignored.
+      </div>
+
+      <div class="d-flex gap-2">
+        <button class="btn btn-outline-info btn-sm" type="submit">Preview changes</button>
+        <a class="btn btn-outline-secondary btn-sm" href="{% url 'srp:admin_payouts' %}">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
