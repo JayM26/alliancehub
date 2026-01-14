@@ -1,4 +1,7 @@
-from django.contrib import admin
+from django.contrib import admin  # pyright: ignore[reportMissingModuleSource]
+from django.contrib.auth.admin import (  # pyright: ignore[reportMissingModuleSource]
+    UserAdmin as DjangoUserAdmin,
+)
 from .models import User
 from eve_sso.models import EveCharacter
 
@@ -20,6 +23,7 @@ class UserAdmin(admin.ModelAdmin):
         "is_superuser",
         "is_active",
     )
+    filter_horizontal = ("groups", "user_permissions")
     search_fields = ("username", "email")
     list_filter = ("is_staff", "is_superuser", "is_active")
     inlines = [EveCharacterInline]

@@ -1,6 +1,8 @@
-from django.contrib.auth.signals import user_logged_in
-from django.dispatch import receiver
-from django.utils import timezone
+from django.contrib.auth.signals import (
+    user_logged_in,
+)  # pyright: ignore[reportMissingModuleSource]
+from django.dispatch import receiver  # pyright: ignore[reportMissingModuleSource]
+from django.utils import timezone  # pyright: ignore[reportMissingModuleSource]
 from datetime import timedelta
 from eve_sso.models import EveCharacter
 

@@ -1,6 +1,8 @@
 # accounts/models.py
-from django.db import models
-from django.contrib.auth.models import AbstractUser
+from django.db import models  # pyright: ignore[reportMissingModuleSource]
+from django.contrib.auth.models import (
+    AbstractUser,
+)  # pyright: ignore[reportMissingModuleSource]
 
 
 class User(AbstractUser):

@@ -14,7 +14,7 @@ services:
     build:
       context: .
       dockerfile: compose/web/Dockerfile
-    command: tail -f /dev/null
+    command: gunicorn alliancehub.wsgi:application --bind 0.0.0.0:8000 --workers 1 --timeout 120
     volumes:
       - .:/app
     ports:

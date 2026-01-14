@@ -1,4 +1,4 @@
-from django.apps import AppConfig
+from django.apps import AppConfig  # pyright: ignore[reportMissingModuleSource]
 
 
 class AccountsConfig(AppConfig):
