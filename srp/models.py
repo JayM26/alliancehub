@@ -13,6 +13,7 @@ SRP_CATEGORIES = [
     ("PEACETIME", "Peacetime"),
     ("SHITSTACK", "Shitstack"),
     ("TNT_SPECIAL", "TNT Special"),
+    ("MANUAL", "Manual"),
 ]
 STATUS_CHOICES = [
     ("PENDING", "Pending"),
@@ -212,8 +213,10 @@ class SRPClaim(models.Model):
     def calculate_payout(self):
         """
         Computes payout from ShipPayout + claim category.
-        If ship isn't set yet (Option B / ESI), payout is 0.
+        Manual category returns existing payout_amount (reviewer-set) or 0.
         """
+        if self.category == "MANUAL":
+            return self.payout_amount or 0
         if not self.ship:
             return 0
         base = self.ship.payout_for_category(self.category)
@@ -229,9 +232,11 @@ class SRPClaim(models.Model):
             self.note = (self.note + "\n" if self.note else "") + note
 
     def save(self, *args, **kwargs):
-        # Only auto-calc when payout is missing (lets you override manually later if desired)
-        if SRPConfig.get().auto_calculate_payouts and self.payout_amount is None:
-            self.payout_amount = self.calculate_payout()
+        cfg = SRPConfig.get()
+        if cfg.auto_calculate_payouts:
+            # Only auto-calc when payout is missing AND not manual
+            if self.payout_amount is None and self.category != "MANUAL":
+                self.payout_amount = self.calculate_payout()
         super().save(*args, **kwargs)
 
     def __str__(self):

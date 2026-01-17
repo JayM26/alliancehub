@@ -21,7 +21,7 @@ from django.db.models.functions import (  # pyright: ignore[reportMissingModuleS
 from django.utils import timezone  # pyright: ignore[reportMissingModuleSource]
 
 from .esi import populate_claim_from_esi, fetch_type_name, get_type_names_cached
-from .forms import SRPClaimForm, ShipPayoutForm
+from .forms import SRPClaimForm, ShipPayoutForm, SRPClaimReviewerEditForm
 from .models import ClaimReview, SRPClaim, ShipPayout, SRPConfig, PayoutImportJob
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -179,6 +179,74 @@ def review_queue(request):
         # attach flags to the object for the template
         c.flag_npc = npc_present
         c.flag_blue = blue_involved
+
+        # --- tiny fitting preview (per-claim, first N items)
+        # --- fitting grouped preview (per-claim)
+        victim = km.get("victim") or {}
+        items = victim.get("items") or []
+        c.fitting_item_count = len(items)
+
+        def _slot_group(flag: int) -> str:
+            # High: 27-34, Mid: 19-26, Low: 11-18, Rigs: 92-94, Cargo: 5, Drone Bay: 87
+            if 27 <= flag <= 34:
+                return "High Slots"
+            if 19 <= flag <= 26:
+                return "Mid Slots"
+            if 11 <= flag <= 18:
+                return "Low Slots"
+            if 92 <= flag <= 94:
+                return "Rigs"
+            if flag == 5:
+                return "Cargo"
+            if flag == 87:
+                return "Drone Bay"
+            return "Other"
+
+        c.fitting_groups_preview = []  # list[(group_name, list[str])]
+
+        if items:
+            # resolve names (bounded)
+            item_type_ids = []
+            for it in items:
+                tid = it.get("item_type_id")
+                if tid:
+                    item_type_ids.append(int(tid))
+
+            type_names = get_type_names_cached(item_type_ids[:60], fetch_cap=60)
+
+            from collections import defaultdict
+
+            grouped = defaultdict(list)
+
+            # build lines like: "Warp Disruptor II ×1"
+            for it in items:
+                tid = it.get("item_type_id")
+                if not tid:
+                    continue
+
+                flag = int(it.get("flag") or 0)
+                group = _slot_group(flag)
+
+                name = type_names.get(int(tid)) or str(tid)
+                qd = int(it.get("quantity_destroyed") or 0)
+                qp = int(it.get("quantity_dropped") or 0)
+                qty = qd + qp
+
+                grouped[group].append(f"{name} ×{qty}" if qty else name)
+
+            # keep ordering consistent
+            order = [
+                "High Slots",
+                "Mid Slots",
+                "Low Slots",
+                "Rigs",
+                "Cargo",
+                "Drone Bay",
+                "Other",
+            ]
+            for g in order:
+                if grouped.get(g):
+                    c.fitting_groups_preview.append((g, grouped[g]))
 
     # Build dropdown options (ALL + whatever your model defines)
     status_choices = ["PENDING", "APPROVED", "DENIED", "PAID"]
@@ -417,6 +485,49 @@ def claim_detail(request, claim_id: int):
     npc_only = player_count == 0 and npc_count > 0
     npc_present = npc_count > 0
 
+    edit_form = None
+    if is_reviewer:
+        if request.method == "POST" and request.POST.get("edit_claim") == "1":
+            old_category = claim.category
+            old_payout = claim.payout_amount
+
+            edit_form = SRPClaimReviewerEditForm(request.POST, instance=claim)
+            if edit_form.is_valid():
+                updated = edit_form.save(commit=False)
+
+                # --- Canonicalize category so we never compare against "Manual"
+                updated.category = (updated.category or "").strip().upper()
+
+                # --- Apply payout logic based on canonical category
+                if updated.category == "MANUAL":
+                    updated.payout_amount = edit_form.cleaned_data.get("payout_amount")
+                else:
+                    updated.payout_amount = updated.calculate_payout()
+
+                updated.reviewer = request.user
+                updated.processed_at = timezone.now()
+                updated.save()
+
+                # Audit log (use the saved instance)
+                changes = []
+                if old_category != updated.category:
+                    changes.append(f"category: {old_category} -> {updated.category}")
+                if old_payout != updated.payout_amount:
+                    changes.append(f"payout: {old_payout} -> {updated.payout_amount}")
+
+                _add_review_record(
+                    updated,
+                    request.user,
+                    "Edited",
+                    "; ".join(changes) or "Edited claim.",
+                )
+
+                messages.success(request, "Claim updated.")
+                return redirect("srp:claim_detail", claim_id=updated.id)
+
+        else:
+            edit_form = SRPClaimReviewerEditForm(instance=claim)
+
     return render(
         request,
         "srp/claim_detail.html",
@@ -438,6 +549,7 @@ def claim_detail(request, claim_id: int):
             "player_damage": player_damage,
             "npc_damage_pct": npc_damage_pct,
             "player_damage_pct": player_damage_pct,
+            "edit_form": edit_form,
         },
     )
 

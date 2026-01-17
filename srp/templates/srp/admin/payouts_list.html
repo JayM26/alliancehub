@@ -25,8 +25,16 @@
     <span class="text-secondary small">({{ ships|length }} shown)</span>
   </div>
   <div class="card-body">
-    <div class="table-responsive">
-      <table class="table table-sm table-dark table-striped align-middle mb-0">
+    <div class="table-responsive" style="max-height: 70vh; overflow-y: auto;">
+      <style>
+        .sticky-table thead th {
+          position: sticky;
+          top: 0;
+          z-index: 5;
+        }
+      </style>
+      
+      <table class="table table-sm table-dark table-striped align-middle mb-0 sticky-table">
         <thead>
           <tr>
             <th>Ship</th>
@@ -46,7 +54,11 @@
             <td class="text-end">{{ s.peacetime|floatformat:0|intcomma }}</td>
             <td class="text-end">{{ s.shitstack|floatformat:0|intcomma }}</td>
             <td class="text-end">{{ s.tnt_special|floatformat:0|intcomma }}</td>
-            <td>{% if s.hull_contract %}<span class="badge text-bg-info">Yes</span>{% else %}<span class="text-secondary">No</span>{% endif %}</td>
+            <td class="col-hull">
+              {% if s.hull_contract %}
+                <span class="badge text-bg-info">Hull</span>
+              {% endif %}
+            </td>
             <td class="text-end">
               <a class="btn btn-outline-info btn-sm" href="{% url 'srp:admin_payout_edit' s.id %}">Edit</a>
             </td>

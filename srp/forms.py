@@ -1,5 +1,9 @@
 import re  # pyright: ignore[reportMissingModuleSource]
 from django import forms  # pyright: ignore[reportMissingModuleSource]
+from decimal import (
+    Decimal,
+    InvalidOperation,
+)  # pyright: ignore[reportMissingModuleSource]
 from .models import SRPClaim, ShipPayout  # pyright: ignore[reportMissingModuleSource]
 
 
@@ -55,3 +59,61 @@ class ShipPayoutForm(forms.ModelForm):
             "shitstack": forms.NumberInput(attrs={"class": "form-control"}),
             "tnt_special": forms.NumberInput(attrs={"class": "form-control"}),
         }
+
+
+class SRPClaimReviewerEditForm(forms.ModelForm):
+    # Use text so "50,000,000" works (browsers hate commas in type=number)
+    payout_amount = forms.CharField(
+        required=False,
+        widget=forms.TextInput(
+            attrs={
+                "class": "form-control",
+                "placeholder": "e.g. 50000000 or 50,000,000",
+            }
+        ),
+        help_text="Only required for Manual.",
+    )
+
+    class Meta:
+        model = SRPClaim
+        fields = ["category", "payout_amount"]
+        widgets = {
+            "category": forms.Select(attrs={"class": "form-select"}),
+        }
+
+    def clean_payout_amount(self):
+        raw = (self.cleaned_data.get("payout_amount") or "").strip()
+        if raw == "":
+            return None
+
+        # Remove commas and underscores, allow "50 000 000" too
+        normalized = raw.replace(",", "").replace("_", "").replace(" ", "")
+
+        try:
+            value = Decimal(normalized)
+        except (InvalidOperation, ValueError):
+            raise forms.ValidationError("Enter a valid ISK amount (numbers only).")
+
+        if value < 0:
+            raise forms.ValidationError("Payout cannot be negative.")
+
+        # Optional: force whole-ISK (no decimals)
+        # value = value.quantize(Decimal("1"))
+
+        return value
+
+    def clean_category(self):
+        cat = (self.cleaned_data.get("category") or "").strip()
+        if cat.lower() == "manual":
+            return "MANUAL"
+        return cat
+
+    def clean(self):
+        cleaned = super().clean()
+        category = cleaned.get("category")
+        payout = cleaned.get("payout_amount")
+
+        if category == "MANUAL" and payout is None:
+            raise forms.ValidationError("Manual category requires a payout amount.")
+
+        return cleaned

@@ -188,6 +188,43 @@
         <hr class="border-secondary"/>
 
         {% if is_reviewer %}
+          {% if is_reviewer and edit_form %}
+            <hr class="border-secondary"/>
+
+            <strong>Edit Claim</strong>
+
+            {% if edit_form.errors %}
+              <div class="alert alert-danger">
+                {{ edit_form.errors }}
+              </div>
+            {% endif %}
+            <form method="post" class="mt-2">
+              {% csrf_token %}
+              <input type="hidden" name="edit_claim" value="1"/>
+
+              <div class="row g-2">
+                <div class="col-md-6">
+                  <label class="form-label small text-secondary mb-1">Category</label>
+                  {{ edit_form.category }}
+                </div>
+
+                <div class="col-md-6">
+                  <label class="form-label small text-secondary mb-1">Manual payout (ISK)</label>
+                  {{ edit_form.payout_amount }}
+                  <div class="text-secondary small mt-1">
+                    Only required for <strong>Manual</strong>. Other categories auto-calc.
+                  </div>
+                </div>
+
+                <div class="col-12">
+                  <button class="btn btn-outline-info btn-sm" type="submit">
+                    Save changes
+                  </button>
+                </div>
+              </div>
+            </form>
+          {% endif %}
+
           <strong>Actions</strong>
           <form method="post" class="d-flex flex-column gap-2 mt-2">
             {% csrf_token %}

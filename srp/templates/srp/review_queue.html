@@ -44,13 +44,23 @@
     <table class="table table-dark table-striped table-hover align-middle">
       <thead>
         <tr>
-          <th>ID</th>
           <th>Submitted</th>
           <th>Submitter</th>
-          <th>Victim</th>
-          <th>Ship</th>
-          <th>Category</th>
-          <th>System</th>
+          <th>
+            Victim
+            <div class="text-secondary small fst-italic">(zKill)</div>
+          </th>
+
+          <th>
+            Ship
+            <div class="text-secondary small fst-italic">(fitting)</div>
+          </th>
+
+          <th>
+            Category
+            <div class="text-secondary small fst-italic">(broadcast)</div>
+          </th>
+          <th>Status</th>
           <th class="text-end">Payout</th>
           <th style="min-width:160px;">Claim Status</th>
           <th style="width:70px;">Flags</th>
@@ -61,22 +71,87 @@
       <tbody>
         {% for c in claims %}
         <tr>
-          <td>#{{ c.id }}</td>
           <td>{{ c.submitted_at|date:"Y-m-d H:i" }}</td>
           <td>{{ c.submitter.username }}</td>
-          <td>{{ c.victim_character_name|default:"—" }}</td>
-
-          <td>
-            {% if c.killmail_id %}
-              <a href="https://zkillboard.com/kill/{{ c.killmail_id }}/" target="_blank" rel="noopener">
-                {% if c.ship %}{{ c.ship.ship_name }}{% elif c.ship_name %}{{ c.ship_name }}{% else %}—{% endif %}
-              </a>
+          <td class="text-nowrap">
+            {% if c.victim_character_name %}
+              {% if c.killmail_id %}
+                <a href="https://zkillboard.com/kill/{{ c.killmail_id }}/"
+                  target="_blank" rel="noopener"
+                  class="link-light text-decoration-none">
+                  {{ c.victim_character_name }}
+                </a>
+              {% else %}
+                {{ c.victim_character_name }}
+              {% endif %}
             {% else %}
-              {% if c.ship %}{{ c.ship.ship_name }}{% elif c.ship_name %}{{ c.ship_name }}{% else %}—{% endif %}
+              <span class="text-secondary">—</span>
             {% endif %}
           </td>
 
-          <td>{{ c.get_category_display }}</td>
+          <td>
+            {% if c.ship or c.ship_name %}
+              <!-- Hidden popover content (slot-grouped) -->
+              <div id="fit-{{ c.id }}" class="d-none">
+                {% if c.fitting_item_count == 0 %}
+                  <div class="text-secondary small">
+                    No item data stored for this claim yet (ESI pull may have failed).
+                  </div>
+                  <div class="text-secondary small mt-2">Open claim for full details.</div>
+                {% else %}
+                  {% if c.fitting_groups_preview %}
+                    {% for group_name, lines in c.fitting_groups_preview %}
+                      <div class="mb-2">
+                        <strong class="small">{{ group_name }}</strong>
+                        <div class="small mt-1">
+                          {% for line in lines|slice:":8" %}
+                            <div>{{ line }}</div>
+                          {% endfor %}
+                          {% if lines|length > 8 %}
+                            <div class="text-secondary">…and {{ lines|length|add:"-8" }} more</div>
+                          {% endif %}
+                        </div>
+                      </div>
+                    {% endfor %}
+                    <div class="text-secondary small mt-2">Open claim for full fit.</div>
+                  {% else %}
+                    <div class="text-secondary small">
+                      Items exist but preview couldn’t be built yet (type cache warming).
+                    </div>
+                    <div class="text-secondary small mt-2">Open claim for full details.</div>
+                  {% endif %}
+                {% endif %}
+              </div>
+
+              <!-- Click target -->
+              <a href="javascript:void(0)"
+                class="link-light text-decoration-none"
+                data-bs-toggle="popover"
+                data-bs-custom-class="popover-dark"
+                data-bs-title="Fitting preview"
+                data-fit-target="fit-{{ c.id }}">
+                {% if c.ship %}{{ c.ship.ship_name }}{% else %}{{ c.ship_name }}{% endif %}
+              </a>
+            {% else %}
+              <span class="text-secondary">—</span>
+            {% endif %}
+          </td>
+
+          <td class="text-nowrap">
+            <a href="javascript:void(0)"
+              class="link-light text-decoration-none"
+              data-bs-toggle="popover"
+              data-bs-custom-class="popover-dark"
+              data-bs-title="Broadcast / Op Post"
+              data-bs-content="
+                <div class='small' style='white-space:pre-wrap'>
+                  {% if c.broadcast_text %}{{ c.broadcast_text|escape }}{% else %}<span class='text-secondary'>—</span>{% endif %}
+                </div>
+              ">
+              {{ c.get_category_display }}
+            </a>
+          </td>
+
           <td>{{ c.system|default:"-" }}</td>
 
           <td class="text-end">
@@ -176,5 +251,31 @@
 {% else %}
   <p>No claims match your filters.</p>
 {% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const triggers = [].slice.call(document.querySelectorAll('[data-bs-toggle="popover"]'));
+    triggers.forEach(function (el) {
+      new bootstrap.Popover(el, {
+        container: "body",
+        html: true,
+        sanitize: false,
+        trigger: "click",
+        placement: "auto",
+        content: function () {
+          const targetId = el.getAttribute("data-fit-target");
+          if (targetId) {
+            const node = document.getElementById(targetId);
+            return node ? node.innerHTML : "<div class='text-secondary small'>No fitting preview.</div>";
+          }
+          return el.getAttribute("data-bs-content") || "";
+        }
+      });
+    });
+  });
+</script>
 
 {% endblock %}
