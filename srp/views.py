@@ -123,7 +123,7 @@ def review_queue(request):
     - search (character/ship/system/link)
     """
     status = (request.GET.get("status") or "ALL").upper()
-    category = request.GET.get("category", "")
+    category = (request.GET.get("category") or "").strip().upper()
     search = (request.GET.get("q", "") or "").strip()
 
     qs = SRPClaim.objects.select_related("ship", "submitter", "reviewer").all()
@@ -288,14 +288,12 @@ def approve_claim(request, claim_id: int):
         claim.set_status(
             "PENDING", reviewer=request.user, note=comment or "Approval removed."
         )
-        claim.processed_at = timezone.now()
         claim.save()
         _add_review_record(claim, request.user, "Unapproved", comment)
         messages.success(request, f"Unapproved claim #{claim.id} (back to Pending).")
     else:
         # Normal approve only from PENDING (but allow if someone wants to correct a DENIED)
         claim.set_status("APPROVED", reviewer=request.user, note=comment or "Approved.")
-        claim.processed_at = timezone.now()
         claim.save()
         _add_review_record(claim, request.user, "Approved", comment)
         messages.success(request, f"Approved claim #{claim.id}.")
@@ -317,7 +315,6 @@ def deny_claim(request, claim_id: int):
         claim.set_status(
             "PENDING", reviewer=request.user, note=comment or "Denial removed."
         )
-        claim.processed_at = timezone.now()
         claim.save()
         _add_review_record(claim, request.user, "Undenied", comment)
         messages.success(
@@ -325,7 +322,6 @@ def deny_claim(request, claim_id: int):
         )
     else:
         claim.set_status("DENIED", reviewer=request.user, note=comment or "Denied.")
-        claim.processed_at = timezone.now()
         claim.save()
         _add_review_record(claim, request.user, "Denied", comment)
         messages.success(request, f"Denied claim #{claim.id}.")
@@ -348,7 +344,6 @@ def pay_claim(request, claim_id: int):
             "APPROVED", reviewer=request.user, note=comment or "Payment mark removed."
         )
         claim.paid_at = None
-        claim.processed_at = timezone.now()
         claim.save()
         _add_review_record(claim, request.user, "Unpaid", comment)
         messages.success(request, f"Unpaid claim #{claim.id} (back to Approved).")
@@ -356,7 +351,6 @@ def pay_claim(request, claim_id: int):
         # Mark paid (only makes sense from APPROVED, but allow as correction)
         claim.set_status("PAID", reviewer=request.user, note=comment or "Paid.")
         claim.paid_at = timezone.now()
-        claim.processed_at = timezone.now()
         claim.save()
         _add_review_record(claim, request.user, "Paid", comment)
         messages.success(request, f"Marked claim #{claim.id} as Paid.")
@@ -488,6 +482,7 @@ def claim_detail(request, claim_id: int):
     edit_form = None
     if is_reviewer:
         if request.method == "POST" and request.POST.get("edit_claim") == "1":
+            # Capture old values BEFORE binding/validating the ModelForm
             old_category = claim.category
             old_payout = claim.payout_amount
 
@@ -495,32 +490,32 @@ def claim_detail(request, claim_id: int):
             if edit_form.is_valid():
                 updated = edit_form.save(commit=False)
 
-                # --- Canonicalize category so we never compare against "Manual"
-                updated.category = (updated.category or "").strip().upper()
+                new_category = (
+                    (edit_form.cleaned_data.get("category") or "").strip().upper()
+                )
+                new_payout = edit_form.cleaned_data.get("payout_amount")
 
-                # --- Apply payout logic based on canonical category
-                if updated.category == "MANUAL":
-                    updated.payout_amount = edit_form.cleaned_data.get("payout_amount")
+                updated.category = new_category
+
+                if updated.category == SRPClaim.Category.MANUAL:
+                    updated.payout_amount = new_payout
                 else:
                     updated.payout_amount = updated.calculate_payout()
 
                 updated.reviewer = request.user
-                updated.processed_at = timezone.now()
+                updated.edited_at = timezone.now()
                 updated.save()
 
-                # Audit log (use the saved instance)
                 changes = []
                 if old_category != updated.category:
-                    changes.append(f"category: {old_category} -> {updated.category}")
+                    changes.append(
+                        f"category: {SRPClaim.category_label(old_category)} -> {SRPClaim.category_label(updated.category)}"
+                    )
                 if old_payout != updated.payout_amount:
                     changes.append(f"payout: {old_payout} -> {updated.payout_amount}")
 
-                _add_review_record(
-                    updated,
-                    request.user,
-                    "Edited",
-                    "; ".join(changes) or "Edited claim.",
-                )
+                audit_comment = "; ".join(changes) if changes else "Edited claim."
+                _add_review_record(updated, request.user, "Edited", audit_comment)
 
                 messages.success(request, "Claim updated.")
                 return redirect("srp:claim_detail", claim_id=updated.id)

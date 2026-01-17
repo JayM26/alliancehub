@@ -14,6 +14,14 @@ class SRPClaimForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
+        # Users should NOT be able to submit Manual claims (reviewer-only category).
+        self.fields["category"].choices = [
+            c
+            for c in self.fields["category"].choices
+            if c[0] != SRPClaim.Category.MANUAL
+        ]
+
         self.fields["broadcast_text"].widget.attrs[
             "placeholder"
         ] = "Fleet broadcast or op post link"
@@ -31,10 +39,13 @@ class SRPClaimForm(forms.ModelForm):
 
     def clean(self):
         cleaned = super().clean()
-        category = cleaned.get("category")
+        category = (cleaned.get("category") or "").strip().upper()
         broadcast = (cleaned.get("broadcast_text") or "").strip()
 
-        if category in ("STRATEGIC", "PEACETIME") and not broadcast:
+        if (
+            category in (SRPClaim.Category.STRATEGIC, SRPClaim.Category.PEACETIME)
+            and not broadcast
+        ):
             raise forms.ValidationError(
                 "Broadcast/Op Post is required for Strategic or Peacetime claims."
             )
@@ -86,7 +97,6 @@ class SRPClaimReviewerEditForm(forms.ModelForm):
         if raw == "":
             return None
 
-        # Remove commas and underscores, allow "50 000 000" too
         normalized = raw.replace(",", "").replace("_", "").replace(" ", "")
 
         try:
@@ -97,23 +107,14 @@ class SRPClaimReviewerEditForm(forms.ModelForm):
         if value < 0:
             raise forms.ValidationError("Payout cannot be negative.")
 
-        # Optional: force whole-ISK (no decimals)
-        # value = value.quantize(Decimal("1"))
-
         return value
-
-    def clean_category(self):
-        cat = (self.cleaned_data.get("category") or "").strip()
-        if cat.lower() == "manual":
-            return "MANUAL"
-        return cat
 
     def clean(self):
         cleaned = super().clean()
-        category = cleaned.get("category")
+        category = (cleaned.get("category") or "").strip().upper()
         payout = cleaned.get("payout_amount")
 
-        if category == "MANUAL" and payout is None:
+        if category == SRPClaim.Category.MANUAL and payout is None:
             raise forms.ValidationError("Manual category requires a payout amount.")
 
         return cleaned

@@ -1,26 +1,11 @@
 from django.conf import settings  # pyright: ignore[reportMissingModuleSource]
-from django.core.validators import (  # pyright: ignore[reportMissingModuleSource]
+from django.core.validators import (
     MinValueValidator,
 )  # pyright: ignore[reportMissingModuleSource]
 from django.db import models  # pyright: ignore[reportMissingModuleSource]
 from django.utils import timezone  # pyright: ignore[reportMissingModuleSource]
 
 User = settings.AUTH_USER_MODEL
-
-# ---- constants
-SRP_CATEGORIES = [
-    ("STRATEGIC", "Strategic"),
-    ("PEACETIME", "Peacetime"),
-    ("SHITSTACK", "Shitstack"),
-    ("TNT_SPECIAL", "TNT Special"),
-    ("MANUAL", "Manual"),
-]
-STATUS_CHOICES = [
-    ("PENDING", "Pending"),
-    ("APPROVED", "Approved"),
-    ("DENIED", "Denied"),
-    ("PAID", "Paid"),
-]
 
 
 class ShipPayout(models.Model):
@@ -60,13 +45,12 @@ class ShipPayout(models.Model):
             "SHITSTACK": self.shitstack,
             "TNT_SPECIAL": self.tnt_special,
         }
-        return mapping.get(category, 0)
+        return mapping.get((category or "").strip().upper(), 0)
 
 
 class EsiTypeCache(models.Model):
     """
     Cache of EVE type_id -> name (modules, ships, ammo, rigs, etc.)
-    Bounded growth: type_ids are finite-ish and shared across killmails.
     """
 
     type_id = models.BigIntegerField(unique=True, db_index=True)
@@ -105,6 +89,19 @@ class SRPConfig(models.Model):
 class SRPClaim(models.Model):
     """User-submitted SRP claim (loss)."""
 
+    class Category(models.TextChoices):
+        STRATEGIC = "STRATEGIC", "Strategic"
+        PEACETIME = "PEACETIME", "Peacetime"
+        SHITSTACK = "SHITSTACK", "Shitstack"
+        TNT_SPECIAL = "TNT_SPECIAL", "TNT Special"
+        MANUAL = "MANUAL", "Manual"
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        APPROVED = "APPROVED", "Approved"
+        DENIED = "DENIED", "Denied"
+        PAID = "PAID", "Paid"
+
     # -------------------------
     # Submitter / ownership
     # -------------------------
@@ -128,7 +125,7 @@ class SRPClaim(models.Model):
         help_text="Resolved ShipPayout (manual or ESI)",
     )
 
-    category = models.CharField(max_length=20, choices=SRP_CATEGORIES)
+    category = models.CharField(max_length=20, choices=Category.choices)
 
     isk_loss = models.DecimalField(
         max_digits=20,
@@ -189,8 +186,8 @@ class SRPClaim(models.Model):
     # -------------------------
     status = models.CharField(
         max_length=20,
-        choices=STATUS_CHOICES,
-        default="PENDING",
+        choices=Status.choices,
+        default=Status.PENDING,
     )
 
     reviewer = models.ForeignKey(
@@ -207,36 +204,59 @@ class SRPClaim(models.Model):
     )
 
     submitted_at = models.DateTimeField(auto_now_add=True)
-    processed_at = models.DateTimeField(blank=True, null=True)
+    processed_at = models.DateTimeField(
+        blank=True, null=True
+    )  # approve/deny/paid timestamp
     paid_at = models.DateTimeField(null=True, blank=True)
+    edited_at = models.DateTimeField(null=True, blank=True)  # reviewer edits timestamp
+
+    @staticmethod
+    def canonical_category(value: str | None) -> str:
+        return (value or "").strip().upper()
+
+    @classmethod
+    def category_label(cls, value: str | None) -> str:
+        key = cls.canonical_category(value)
+        # choices is list[(value, label)]
+        return dict(cls.Category.choices).get(key, key or "—")
 
     def calculate_payout(self):
         """
         Computes payout from ShipPayout + claim category.
-        Manual category returns existing payout_amount (reviewer-set) or 0.
+        (Manual is intentionally excluded; manual payout is reviewer-entered.)
         """
-        if self.category == "MANUAL":
-            return self.payout_amount or 0
+        cat = self.canonical_category(self.category)
         if not self.ship:
             return 0
-        base = self.ship.payout_for_category(self.category)
-        return base or 0
+        return self.ship.payout_for_category(cat) or 0
 
     def set_status(self, new_status: str, reviewer=None, note: str = ""):
-        self.status = new_status
+        ns = (new_status or "").strip().upper()
+        self.status = ns
+
         if reviewer:
             self.reviewer = reviewer
-        if new_status in {"APPROVED", "DENIED", "PAID"}:
+
+        # processed_at is only for approve/deny/paid; cleared when returning to pending
+        if ns in {self.Status.APPROVED, self.Status.DENIED, self.Status.PAID}:
             self.processed_at = timezone.now()
+        elif ns == self.Status.PENDING:
+            self.processed_at = None
+
         if note:
             self.note = (self.note + "\n" if self.note else "") + note
 
     def save(self, *args, **kwargs):
+        # Enforce canonical storage (prevents "Manual" ever living in the DB)
+        self.category = self.canonical_category(self.category)
+        self.status = (self.status or "").strip().upper()
+
         cfg = SRPConfig.get()
-        if cfg.auto_calculate_payouts:
-            # Only auto-calc when payout is missing AND not manual
-            if self.payout_amount is None and self.category != "MANUAL":
-                self.payout_amount = self.calculate_payout()
+
+        # Payout policy: always derived unless Manual
+        if cfg.auto_calculate_payouts and self.category != self.Category.MANUAL:
+            self.payout_amount = self.calculate_payout()
+
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -254,19 +274,23 @@ class SRPClaim(models.Model):
             ("can_view_srp_reports", "Can view SRP reports"),
         ]
 
-    # ---- business logic
     def clean(self):
         from django.core.exceptions import (  # pyright: ignore[reportMissingModuleSource]
             ValidationError,
-        )  # pyright: ignore[reportMissingModuleSource]
+        )
 
+        cat = self.canonical_category(self.category)
+
+        # Only enforce broadcast requirement for user-submitted categories
         if (
-            self.category in {"STRATEGIC", "PEACETIME"}
-            and not self.broadcast_text.strip()
+            cat in {self.Category.STRATEGIC, self.Category.PEACETIME}
+            and not (self.broadcast_text or "").strip()
         ):
             raise ValidationError(
                 "Broadcast/Op Post is required for Strategic or Peacetime claims."
             )
+        if self.category == self.Category.MANUAL and not self.reviewer:
+            raise ValidationError("Manual category can only be set by SRP reviewers.")
 
 
 class ClaimReview(models.Model):

@@ -96,11 +96,15 @@
           </div>
 
           <div class="col-6">
-            <div class="text-secondary small">Processed / Paid</div>
+            <div class="text-secondary small">Processed / Edited / Paid</div>
             <div class="small">
               <div>
                 Processed:
                 {% if claim.processed_at %}{{ claim.processed_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}
+              </div>
+              <div>
+                Edited:
+                {% if claim.edited_at %}{{ claim.edited_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}
               </div>
               <div>
                 Paid:

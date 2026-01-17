@@ -190,6 +190,12 @@
                 {{ c.submitted_at|date:"Y-m-d H:i" }}
               {% endif %}
             </div>
+            {% if c.edited_at %}
+              <div class="text-secondary small">
+                Edited {{ c.edited_at|date:"Y-m-d H:i" }}
+              </div>
+            {% endif %}
+
           </td>
 
           <!-- FLAGS COLUMN -->
