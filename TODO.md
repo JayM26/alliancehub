@@ -1,67 +1,101 @@
 # AllianceHub TODO
 
-## 🚀 Short-Term
+This file tracks active work, planned features, and future ideas for AllianceHub.
+SRP is treated as a first-class module.
+
+## AllianceHub – Core (Short-Term / Active)
+
 - Create dashboard page with character list
 - Allow switching / promoting mains
 - Add user profile editing
 - Display active corp / alliance on home
 
-## 🧩 Medium-Term
+## AllianceHub – Core (Medium-Term)
+
 - Fleet Tracker module
-- SRP integration
 - Discord bot SSO link
-- Scheduled token refresh (Celery or cron)
+- Scheduled token refresh (Celery or cron, if not handled by auth provider)
 
-## 🧰 Tech Debt / Refactors
+## Tech Debt / Quality
+
 - Move hardcoded URLs to settings
-- Add typing hints & docstrings
-- Write unit tests for utils.py
+- Add typing hints and docstrings
+- Write unit tests for:
+  - utils.py
+  - SRP business logic (payout calculation, category handling, workflow)
+- Add basic developer documentation (README / setup notes)
 
-## SRP – Admin & Roles (Post-MVP)
-- [ ] Add SRP custom permissions (role-oriented):
-  - [ ] can_manage_srp_payouts
-  - [ ] can_view_srp_reports
-- [ ] Decide payout management approach:
-  - [ ] Django Admin vs in-app UI
-  - [ ] If in-app: build `/srp/payouts/manage/` gated by can_manage_srp_payouts
-- [ ] Auto-create default groups (migration or management command):
-  - [ ] SRP Reviewer
-  - [ ] SRP Admin
-- [ ] (Optional) Filter/hide default Django add/change/delete/view perms in admin (keep DB intact)
-- Some sort of notification to set payments for new ships that are added
+## SRP Module
 
-## SRP – Workflow & UX Improvements (MVP+)
-### Reviewer Queue
-- [ ] Add `status=ALL` (default) so actions don’t “disappear” after approve/deny/pay
-- [ ] Add explicit success messages for approve/deny/pay (and keep user on same filtered view)
-- [ ] Display processing metadata in queue:
-  - [ ] reviewer name
-  - [ ] approved/denied timestamp
-  - [ ] paid timestamp (separate from processed_at)
-- [ ] Add reviewer notes input on approve/deny/pay (stored + shown)
-- [ ] Add claim detail page from queue (`/srp/claim/<id>/`) with full info + history
-- [ ] Add claim history / audit trail display (use ClaimReview records)
+## SRP – Reviewer Quality of Life (High Priority)
 
-### Claim Data & ESI / Killmail
-- [ ] Parse ESI/killmail link and fetch killmail data server-side
-- [ ] Pull and store key killmail fields on submit:
-  - [ ] victim character name (actual pilot)
-  - [ ] ship type
-  - [ ] system/region
-  - [ ] fit / items (at least a raw JSON blob for now)
-- [ ] Show ESI/killmail data in claim detail view (fit is required for some SRP)
-- [ ] Consider auto-creating ShipPayout rows if ship not in table yet (payout defaults to 0 + flag)
+- Fit checker (flag-only, not enforcement)
+  - Compare submitted fit vs stored doctrine
+  - Allow small module variations (green/blue mods)
+  - Initial scope limited to:
+    - Mainline doctrines
+    - Capital ships
+- Fit importer
+  - Accept standard formats (EFT / Pyfa)
+  - Store per-ship doctrine fits
+- Implant checker
+  - Automatically validate pod losses
+  - Flag non-pod cases for manual review
+- Optional "Show attackers" page
+  - Lazy-loaded (not part of main review flow)
+  - Used only when zKill fails or for edge cases
+- Display which blue or NPC triggered flags
+  - On demand (detail page only)
 
-### Submitter vs Victim + Payout Recipient
-- [ ] Track both identities:
-  - [ ] submitter (logged-in main) = existing `submitter`
-  - [ ] victim pilot (from killmail) = new field (e.g., `victim_character_name`)
-- [ ] Add payout recipient option:
-  - [ ] default recipient = submitter
-  - [ ] allow toggle: pay submitter vs pay victim
-  - [ ] store recipient choice in claim (future: integrate wallet/contract workflow)
+## SRP – Admin and Roles (Post-MVP)
 
-### Validation & Robustness
-- [ ] Improve submit form validation and error messaging
-- [ ] Enforce broadcast requirement for Strategic/Peacetime (already) + show clearer UI hints
-- [ ] Handle bad/unsupported ESI links gracefully (user-friendly errors)
+- Auto-create default SRP groups:
+  - SRP Reviewer
+  - SRP Admin
+- Notification when new ships are added with payout = 0
+- Hide default Django permissions in admin (database unchanged)
+
+## SRP – Workflow Enhancements (Medium Priority)
+
+- Payout recipient handling
+  - Default payout to submitter
+  - Optional payout to victim pilot
+  - Store recipient choice on claim
+- Bulk reviewer actions
+  - Bulk approve
+  - Bulk mark paid
+- Derived payout recompute tool
+  - Recalculate existing claims after payout table changes
+
+## SRP – Performance and Architecture
+
+- Cache corporation ID to name
+- Cache alliance ID to name
+- Keep character name resolution on-demand only
+- Avoid background workers unless clearly justified
+- Optional background job for slow ESI enrichment (deferred)
+
+## SRP – Reporting and Analytics (Future)
+
+- Enhanced SRP reports
+  - Category breakdowns
+  - Reviewer activity metrics
+- Export tools (CSV for finance / leadership)
+- Trend analysis
+  - Repeat attackers
+  - Time-of-day patterns
+  - Frequent blue involvement
+
+## Experimental / Long-Term Ideas
+
+- SeAT API integration (read-only, selective)
+- Threat analysis engine
+- Automated SRP anomaly detection
+
+## Design Principles (Do Not Remove)
+
+- Prefer flags over enforcement
+- Optimize for reviewer speed
+- Avoid background workers unless justified
+- MVP first, features second
+- Humans make final decisions
