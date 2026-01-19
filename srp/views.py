@@ -19,16 +19,34 @@ from django.db.models.functions import (  # pyright: ignore[reportMissingModuleS
     Coalesce,
 )
 from django.utils import timezone  # pyright: ignore[reportMissingModuleSource]
+from django.db import transaction  # pyright: ignore[reportMissingModuleSource]
+from django.views.decorators.http import (  # pyright: ignore[reportMissingModuleSource]
+    require_POST,
+)
 
 from .esi import populate_claim_from_esi, fetch_type_name, get_type_names_cached
-from .forms import SRPClaimForm, ShipPayoutForm, SRPClaimReviewerEditForm
-from .models import ClaimReview, SRPClaim, ShipPayout, SRPConfig, PayoutImportJob
+from .forms import (
+    SRPClaimForm,
+    ShipPayoutForm,
+    SRPClaimReviewerEditForm,
+    DoctrineFitImportForm,
+    DoctrineFitEditForm,
+)
+from .models import (
+    ClaimReview,
+    SRPClaim,
+    ShipPayout,
+    SRPConfig,
+    PayoutImportJob,
+    DoctrineFit,
+)
+from .fitcheck import ensure_fitcheck_cached
+from .fit_importer import import_eft_fit
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 import csv
 import io
 import re
-from django.db import transaction  # pyright: ignore[reportMissingModuleSource]
 
 
 @login_required
@@ -122,7 +140,7 @@ def review_queue(request):
     - category
     - search (character/ship/system/link)
     """
-    status = (request.GET.get("status") or "ALL").upper()
+    status = (request.GET.get("status") or "ALL").strip().upper()
     category = (request.GET.get("category") or "").strip().upper()
     search = (request.GET.get("q", "") or "").strip()
 
@@ -144,7 +162,7 @@ def review_queue(request):
             | Q(esi_link__icontains=search)
         )
 
-    claims = qs.order_by("-submitted_at")[:500]
+    claims = qs.select_related("fitcheck_best_fit").order_by("submitted_at")
 
     # --- Flag-only checks for queue (Blue + NPC present)
     cfg = SRPConfig.get()
@@ -152,6 +170,9 @@ def review_queue(request):
         int(x) for x in (cfg.blue_alliance_ids or []) if str(x).isdigit()
     )
     blue_corp_ids = set(int(x) for x in (cfg.blue_corp_ids or []) if str(x).isdigit())
+    self_alliance_ids = set(
+        int(x) for x in (cfg.self_alliance_ids or []) if str(x).isdigit()
+    )
 
     for c in claims:
         km = c.killmail_raw or {}
@@ -160,6 +181,30 @@ def review_queue(request):
         npc_present = False
         blue_involved = False
 
+        # --- Submitter vs Victim flags
+        victim = km.get("victim") or {}
+        victim_corp_id = victim.get("corporation_id")
+        victim_alliance_id = victim.get("alliance_id")
+
+        # Submitter corp id (from linked main_character if present)
+        submitter_corp_id = None
+        mc = getattr(c.submitter, "main_character", None)
+        if mc:
+            submitter_corp_id = getattr(mc, "corporation_id", None)
+
+        c.flag_corp_mismatch = (
+            bool(victim_corp_id)
+            and bool(submitter_corp_id)
+            and int(victim_corp_id) != int(submitter_corp_id)
+        )
+
+        # Non-TNT: only evaluate if we know TNT alliance id(s) AND victim has an alliance id
+        c.flag_non_tnt = (
+            bool(self_alliance_ids)
+            and bool(victim_alliance_id)
+            and int(victim_alliance_id) not in self_alliance_ids
+        )
+        # --- Attacker analysis
         for a in attackers:
             char_id = a.get("character_id")
             if not char_id:
@@ -358,6 +403,170 @@ def pay_claim(request, claim_id: int):
     return redirect(request.META.get("HTTP_REFERER", "srp:review_queue"))
 
 
+def _require_reviewer(user) -> bool:
+    return user.has_perm("srp.can_review_srp")
+
+
+@login_required
+def doctrine_fit_list(request):
+    if not _require_reviewer(request.user):
+        return redirect("srp:admin_overview")
+
+    q = (request.GET.get("q") or "").strip()
+    active = (request.GET.get("active") or "").strip()  # "", "1", "0"
+
+    fits = DoctrineFit.objects.annotate(item_count=Count("items"))
+
+    if q:
+        fits = fits.filter(Q(ship_name__icontains=q) | Q(name__icontains=q))
+
+    if active == "1":
+        fits = fits.filter(active=True)
+    elif active == "0":
+        fits = fits.filter(active=False)
+
+    fits = fits.order_by("ship_name", "name")
+
+    return render(
+        request,
+        "srp/admin/doctrine_fits_list.html",
+        {"fits": fits, "q": q, "active": active},
+    )
+
+
+@login_required
+def doctrine_fit_import(request):
+    if not _require_reviewer(request.user):
+        return redirect("srp:overview")
+
+    if request.method == "POST":
+        form = DoctrineFitImportForm(request.POST)
+        if form.is_valid():
+            eft_text = form.cleaned_data["eft_text"]
+            try:
+                fit = import_eft_fit(eft_text=eft_text, updated_by=request.user)
+            except Exception as e:
+                messages.error(request, f"Import failed: {e}")
+            else:
+                messages.success(request, f"Imported fit: {fit.ship_name} — {fit.name}")
+                return redirect("srp:doctrine_fit_detail", fit_id=fit.id)
+    else:
+        form = DoctrineFitImportForm()
+
+    return render(request, "srp/admin/doctrine_fit_import.html", {"form": form})
+
+
+@login_required
+def doctrine_fit_detail(request, fit_id: int):
+    if not _require_reviewer(request.user):
+        return redirect("srp:overview")
+
+    fit = get_object_or_404(DoctrineFit.objects.prefetch_related("items"), id=fit_id)
+
+    if request.method == "POST":
+        # Two actions supported here:
+        # 1) Edit name/active
+        # 2) Overwrite items by re-importing EFT text
+        if request.POST.get("overwrite") == "1":
+            eft_text = (request.POST.get("eft_text") or "").strip()
+            if not eft_text:
+                messages.error(request, "Paste EFT text to overwrite this fit.")
+            else:
+                try:
+                    import_eft_fit(
+                        eft_text=eft_text,
+                        updated_by=request.user,
+                        overwrite_fit_id=fit.id,
+                    )
+                except Exception as e:
+                    messages.error(request, f"Overwrite failed: {e}")
+                else:
+                    messages.success(request, "Fit overwritten from EFT.")
+                    return redirect("srp:doctrine_fit_detail", fit_id=fit.id)
+
+        else:
+            form = DoctrineFitEditForm(request.POST, instance=fit)
+            if form.is_valid():
+                updated = form.save(commit=False)
+                updated.updated_by = request.user
+                updated.save()
+                messages.success(request, "Fit updated.")
+                return redirect("srp:doctrine_fit_detail", fit_id=fit.id)
+
+    form = DoctrineFitEditForm(instance=fit)
+
+    return render(
+        request,
+        "srp/admin/doctrine_fit_detail.html",
+        {
+            "fit": fit,
+            "form": form,
+            "items": fit.items.all(),
+        },
+    )
+
+
+@login_required
+@require_POST
+def fitcheck_rerun(request, claim_id: int):
+    if not request.user.has_perm("srp.can_review_srp"):
+        return redirect("srp:my_claims")
+
+    claim = get_object_or_404(
+        SRPClaim.objects.select_related("fitcheck_best_fit", "fitcheck_selected_fit"),
+        id=claim_id,
+    )
+
+    from .fitcheck import compute_fitcheck  # local import avoids circular surprises
+
+    result = compute_fitcheck(claim)
+
+    claim.fitcheck_status = result.get("status") or ""
+    claim.fitcheck_best_fit_id = result.get("best_fit_id")
+    claim.fitcheck_data = result
+    claim.no_rigs_flag = bool(result.get("no_rigs"))
+    claim.fitcheck_updated_at = timezone.now()
+
+    claim.save(
+        update_fields=[
+            "fitcheck_status",
+            "fitcheck_best_fit",
+            "fitcheck_data",
+            "no_rigs_flag",
+            "fitcheck_updated_at",
+        ]
+    )
+
+    messages.success(request, "Fit check re-ran.")
+    return redirect("srp:claim_detail", claim_id=claim.id)
+
+
+@login_required
+@require_POST
+def doctrine_fit_deactivate(request, fit_id: int):
+    if not _require_reviewer(request.user):
+        return redirect("srp:admin_overview")
+
+    fit = get_object_or_404(DoctrineFit, id=fit_id)
+    fit.active = False
+    fit.updated_by = request.user
+    fit.save(update_fields=["active", "updated_by", "updated_at"])
+    messages.success(request, "Fit deactivated.")
+    return redirect("srp:doctrine_fit_list")
+
+
+@login_required
+@require_POST
+def doctrine_fit_delete(request, fit_id: int):
+    if not _require_reviewer(request.user):
+        return redirect("srp:admin_overview")
+
+    fit = get_object_or_404(DoctrineFit, id=fit_id)
+    fit.delete()
+    messages.success(request, "Fit deleted.")
+    return redirect("srp:doctrine_fit_list")
+
+
 @login_required
 def claim_detail(request, claim_id: int):
     """
@@ -365,11 +574,17 @@ def claim_detail(request, claim_id: int):
     - Reviewers (srp.can_review_srp) can view any claim
     - Regular users can view only their own claims
     - Flag-only auto checks: NPC-only / NPC-present / Blue-involved
-    - Uses DB cache for type names (modules/items) to avoid repeated ESI calls
-    - Reviewer can Approve/Unapprove, Deny/Undeny, Paid/Unpay from this page
+    - Fit check (cached, lazy)
+    - Submitter/Victim corp + alliance display
     """
     claim = get_object_or_404(
-        SRPClaim.objects.select_related("ship", "submitter", "reviewer"),
+        SRPClaim.objects.select_related(
+            "ship",
+            "submitter",
+            "reviewer",
+            "fitcheck_best_fit",
+            "fitcheck_selected_fit",
+        ),
         id=claim_id,
     )
 
@@ -377,20 +592,82 @@ def claim_detail(request, claim_id: int):
     if not is_reviewer and claim.submitter_id != request.user.id:
         return redirect("srp:my_claims")
 
+    # --- Fit check (lazy, cached)
+    ensure_fitcheck_cached(claim)
+
+    # --- Review history
     reviews = (
         ClaimReview.objects.select_related("reviewer")
         .filter(claim=claim)
         .order_by("-timestamp")
     )
 
+    # --- Killmail basics
     km = claim.killmail_raw or {}
     victim = km.get("victim") or {}
     items = victim.get("items") or []
     attackers = km.get("attackers") or []
 
-    # ---- Group fittings by slot (based on ESI "flag")
+    # =========================================================
+    # Submitter / Victim corp + alliance (DISPLAY ONLY)
+    # =========================================================
+    from .esi import get_entity_names_cached
+
+    # Submitter (from linked main character)
+    submitter_char = None
+    submitter_corp = None
+    submitter_alliance = None
+    submitter_corp_id = None
+
+    mc = getattr(claim.submitter, "main_character", None)
+    if mc:
+        submitter_char = mc.character_name
+        submitter_corp = getattr(mc, "corporation_name", None)
+        submitter_alliance = getattr(mc, "alliance_name", None)
+        submitter_corp_id = getattr(mc, "corporation_id", None)
+
+    # Victim (from killmail)
+    victim_char = claim.victim_character_name
+    victim_corp = None
+    victim_alliance = None
+
+    victim_corp_id = victim.get("corporation_id")
+    victim_alliance_id = victim.get("alliance_id")
+
+    if victim_corp_id:
+        victim_corp = get_entity_names_cached(
+            "corp", [victim_corp_id], fetch_cap=1
+        ).get(int(victim_corp_id))
+
+    if victim_alliance_id:
+        victim_alliance = get_entity_names_cached(
+            "alliance", [victim_alliance_id], fetch_cap=1
+        ).get(int(victim_alliance_id))
+
+    # =========================================================
+    # Corp mismatch / Non-TNT flags
+    # =========================================================
+    cfg = SRPConfig.get()
+    self_alliance_ids = set(
+        int(x) for x in (cfg.self_alliance_ids or []) if str(x).isdigit()
+    )
+
+    corp_mismatch = (
+        bool(victim_corp_id)
+        and bool(submitter_corp_id)
+        and int(victim_corp_id) != int(submitter_corp_id)
+    )
+
+    victim_non_tnt = (
+        bool(self_alliance_ids)
+        and bool(victim_alliance_id)
+        and int(victim_alliance_id) not in self_alliance_ids
+    )
+
+    # =========================================================
+    # Fitting grouping (slots, ammo filtered)
+    # =========================================================
     def _slot_group(flag: int) -> str:
-        # High: 27-34, Mid: 19-26, Low: 11-18, Rigs: 92-94, Cargo: 5, Drone Bay: 87
         if 27 <= flag <= 34:
             return "High Slots"
         if 19 <= flag <= 26:
@@ -410,6 +687,18 @@ def claim_detail(request, claim_id: int):
     fittings_map = defaultdict(list)
     for it in items:
         flag = int(it.get("flag") or 0)
+
+        destroyed = int(it.get("quantity_destroyed") or 0)
+        dropped = int(it.get("quantity_dropped") or 0)
+        qty_total = destroyed + dropped
+
+        singleton = int(it.get("singleton") or 0)
+
+        # Filter ammo / charges / scripts
+        if qty_total > 1 and singleton == 0:
+            continue
+
+        it["qty_total"] = qty_total
         fittings_map[_slot_group(flag)].append(it)
 
     fitting_groups = []
@@ -425,24 +714,33 @@ def claim_detail(request, claim_id: int):
         if fittings_map.get(name):
             fitting_groups.append((name, fittings_map[name]))
 
-    # ---- Cached type name lookups (bounded, warms over time)
-    from .esi import get_type_names_cached  # local import avoids circular surprises
-
+    # =========================================================
+    # Type name resolution (items + fitcheck diff)
+    # =========================================================
     item_type_ids = []
     for it in items:
         tid = it.get("item_type_id")
         if tid:
             item_type_ids.append(int(tid))
 
-    type_names = get_type_names_cached(item_type_ids, fetch_cap=40)
+    diff_type_ids = []
+    fc = claim.fitcheck_data or {}
+    diff = fc.get("diff") or {}
+    for bucket in ("missing", "extra"):
+        groups = diff.get(bucket) or {}
+        for rows in groups.values():
+            for r in rows or []:
+                tid = r.get("type_id")
+                if tid:
+                    diff_type_ids.append(int(tid))
 
-    # ---- Flag-only checks (no name resolution)
-    npc_count = 0
-    player_count = 0
-    npc_damage = 0
-    player_damage = 0
+    type_names = get_type_names_cached(item_type_ids + diff_type_ids, fetch_cap=120)
 
-    cfg = SRPConfig.get()
+    # =========================================================
+    # NPC / Blue flags
+    # =========================================================
+    npc_count = player_count = npc_damage = player_damage = 0
+
     blue_alliance_ids = set(
         int(x) for x in (cfg.blue_alliance_ids or []) if str(x).isdigit()
     )
@@ -457,11 +755,10 @@ def claim_detail(request, claim_id: int):
         if char_id:
             player_count += 1
             player_damage += dmg
-
-            alliance_id = a.get("alliance_id")
-            corp_id = a.get("corporation_id")
-            if (alliance_id and int(alliance_id) in blue_alliance_ids) or (
-                corp_id and int(corp_id) in blue_corp_ids
+            if (
+                a.get("alliance_id") and int(a["alliance_id"]) in blue_alliance_ids
+            ) or (
+                a.get("corporation_id") and int(a["corporation_id"]) in blue_corp_ids
             ):
                 blue_involved = True
         else:
@@ -469,38 +766,37 @@ def claim_detail(request, claim_id: int):
             npc_damage += dmg
 
     total_damage = npc_damage + player_damage
-    npc_damage_pct = (
-        round((npc_damage / total_damage) * 100, 1) if total_damage else 0.0
-    )
+    npc_damage_pct = round((npc_damage / total_damage) * 100, 1) if total_damage else 0
     player_damage_pct = (
-        round((player_damage / total_damage) * 100, 1) if total_damage else 0.0
+        round((player_damage / total_damage) * 100, 1) if total_damage else 0
     )
 
     npc_only = player_count == 0 and npc_count > 0
     npc_present = npc_count > 0
 
+    # =========================================================
+    # Reviewer edit form
+    # =========================================================
     edit_form = None
     if is_reviewer:
         if request.method == "POST" and request.POST.get("edit_claim") == "1":
-            # Capture old values BEFORE binding/validating the ModelForm
             old_category = claim.category
             old_payout = claim.payout_amount
 
             edit_form = SRPClaimReviewerEditForm(request.POST, instance=claim)
             if edit_form.is_valid():
                 updated = edit_form.save(commit=False)
-
                 new_category = (
                     (edit_form.cleaned_data.get("category") or "").strip().upper()
                 )
                 new_payout = edit_form.cleaned_data.get("payout_amount")
 
                 updated.category = new_category
-
-                if updated.category == SRPClaim.Category.MANUAL:
-                    updated.payout_amount = new_payout
-                else:
-                    updated.payout_amount = updated.calculate_payout()
+                updated.payout_amount = (
+                    new_payout
+                    if new_category == SRPClaim.Category.MANUAL
+                    else updated.calculate_payout()
+                )
 
                 updated.reviewer = request.user
                 updated.edited_at = timezone.now()
@@ -509,20 +805,26 @@ def claim_detail(request, claim_id: int):
                 changes = []
                 if old_category != updated.category:
                     changes.append(
-                        f"category: {SRPClaim.category_label(old_category)} -> {SRPClaim.category_label(updated.category)}"
+                        f"category: {SRPClaim.category_label(old_category)} → {SRPClaim.category_label(updated.category)}"
                     )
                 if old_payout != updated.payout_amount:
-                    changes.append(f"payout: {old_payout} -> {updated.payout_amount}")
+                    changes.append(f"payout: {old_payout} → {updated.payout_amount}")
 
-                audit_comment = "; ".join(changes) if changes else "Edited claim."
-                _add_review_record(updated, request.user, "Edited", audit_comment)
+                _add_review_record(
+                    updated,
+                    request.user,
+                    "Edited",
+                    "; ".join(changes) if changes else "Edited claim.",
+                )
 
                 messages.success(request, "Claim updated.")
                 return redirect("srp:claim_detail", claim_id=updated.id)
-
         else:
             edit_form = SRPClaimReviewerEditForm(instance=claim)
 
+    # =========================================================
+    # Render
+    # =========================================================
     return render(
         request,
         "srp/claim_detail.html",
@@ -530,20 +832,36 @@ def claim_detail(request, claim_id: int):
             "claim": claim,
             "reviews": reviews,
             "is_reviewer": is_reviewer,
-            "km": km,
-            "victim": victim,
-            "items": items,
+            # Parties
+            "submitter_char": submitter_char,
+            "submitter_corp": submitter_corp,
+            "submitter_alliance": submitter_alliance,
+            "victim_char": victim_char,
+            "victim_corp": victim_corp,
+            "victim_alliance": victim_alliance,
+            # Fitting
             "fitting_groups": fitting_groups,
             "type_names": type_names,
+            # Flags
             "npc_only": npc_only,
             "npc_present": npc_present,
             "blue_involved": blue_involved,
+            "corp_mismatch": corp_mismatch,
+            "victim_non_tnt": victim_non_tnt,
+            # Damage
             "npc_count": npc_count,
             "player_count": player_count,
             "npc_damage": npc_damage,
             "player_damage": player_damage,
             "npc_damage_pct": npc_damage_pct,
             "player_damage_pct": player_damage_pct,
+            # Fit check
+            "fitcheck_status": claim.fitcheck_status,
+            "fitcheck_data": claim.fitcheck_data,
+            "fitcheck_best_fit": claim.fitcheck_best_fit,
+            "fitcheck_selected_fit": claim.fitcheck_selected_fit,
+            "no_rigs_flag": claim.no_rigs_flag,
+            # Forms
             "edit_form": edit_form,
         },
     )

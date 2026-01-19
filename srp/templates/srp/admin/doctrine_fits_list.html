@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% load humanize %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+  <h2 class="mb-0">Doctrine Fits</h2>
+  <a class="btn btn-outline-info btn-sm" href="{% url 'srp:doctrine_fit_import' %}">Import EFT Fit</a>
+</div>
+
+<form method="get" class="d-flex flex-wrap gap-2 align-items-end mb-3">
+  <div>
+    <label class="form-label mb-1 text-secondary">Search</label>
+    <input class="form-control form-control-sm"
+           type="text"
+           name="q"
+           value="{{ q }}"
+           placeholder="Ship or fit name">
+  </div>
+
+  <div>
+    <label class="form-label mb-1 text-secondary">Active</label>
+    <select class="form-select form-select-sm" name="active">
+      <option value="" {% if not active %}selected{% endif %}>All</option>
+      <option value="1" {% if active == "1" %}selected{% endif %}>Active only</option>
+      <option value="0" {% if active == "0" %}selected{% endif %}>Inactive only</option>
+    </select>
+  </div>
+
+  <div class="d-flex gap-2">
+    <button class="btn btn-outline-info btn-sm" type="submit">Apply</button>
+    <a class="btn btn-outline-secondary btn-sm" href="{% url 'srp:doctrine_fit_list' %}">Reset</a>
+  </div>
+</form>
+
+<div class="card bg-dark border-secondary">
+  <div class="card-header border-secondary d-flex justify-content-between align-items-center">
+    <strong>Imported Fits</strong>
+    <span class="text-secondary small">{{ fits|length }} shown</span>
+  </div>
+
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-dark table-striped align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Ship</th>
+            <th>Fit Name</th>
+            <th class="text-end">Items</th>
+            <th class="text-center">Active</th>
+            <th class="text-end"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in fits %}
+            <tr>
+              <td class="text-nowrap">{{ f.ship_name }}</td>
+              <td>{{ f.name }}</td>
+              <td class="text-end">{{ f.item_count|intcomma }}</td>
+              <td class="text-center">
+                {% if f.active %}
+                  <span class="badge text-bg-success">Active</span>
+                {% else %}
+                  <span class="badge text-bg-secondary">Inactive</span>
+                {% endif %}
+              </td>
+              <td class="text-end">
+                <a class="btn btn-sm btn-outline-secondary" href="{% url 'srp:doctrine_fit_detail' f.id %}">
+                  Manage
+                </a>
+              </td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="5" class="text-secondary">No fits imported yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="text-secondary small mt-2">
+      Tip: Use Search to find by ship or fit name. Keep old fits Inactive instead of deleting if you want history.
+    </div>
+  </div>
+</div>
+{% endblock %}

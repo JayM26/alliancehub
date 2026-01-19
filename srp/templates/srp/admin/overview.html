@@ -12,6 +12,20 @@
   </div>
 </div>
 
+
+<!-- Admin quick links -->
+<div class="d-flex flex-wrap gap-2 mb-3">
+  <a class="btn btn-outline-light btn-sm" href="{% url 'srp:review_queue' %}">Review Queue</a>
+  <a class="btn btn-outline-light btn-sm" href="{% url 'srp:admin_payouts' %}">Payouts</a>
+  <a class="btn btn-outline-light btn-sm" href="{% url 'srp:admin_payouts_bulk' %}">Bulk Upload Payouts</a>
+
+  <span class="mx-1"></span>
+
+  <a class="btn btn-outline-info btn-sm" href="{% url 'srp:doctrine_fit_list' %}">Doctrine Fits</a>
+  <a class="btn btn-outline-info btn-sm" href="{% url 'srp:doctrine_fit_import' %}">Import EFT Fit</a>
+</div>
+
+
 <!-- Time controls -->
 <div class="d-flex flex-wrap gap-3 align-items-end mb-3">
   <div>

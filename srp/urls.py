@@ -28,4 +28,30 @@ urlpatterns = [
         views.admin_payouts_bulk_apply,
         name="admin_payouts_bulk_apply",
     ),
+    path("admin/doctrine-fits/", views.doctrine_fit_list, name="doctrine_fit_list"),
+    path(
+        "admin/doctrine-fits/import/",
+        views.doctrine_fit_import,
+        name="doctrine_fit_import",
+    ),
+    path(
+        "admin/doctrine-fits/<int:fit_id>/",
+        views.doctrine_fit_detail,
+        name="doctrine_fit_detail",
+    ),
+    path(
+        "admin/doctrine-fits/<int:fit_id>/deactivate/",
+        views.doctrine_fit_deactivate,
+        name="doctrine_fit_deactivate",
+    ),
+    path(
+        "admin/doctrine-fits/<int:fit_id>/delete/",
+        views.doctrine_fit_delete,
+        name="doctrine_fit_delete",
+    ),
+    path(
+        "claim/<int:claim_id>/fitcheck/rerun/",
+        views.fitcheck_rerun,
+        name="fitcheck_rerun",
+    ),
 ]

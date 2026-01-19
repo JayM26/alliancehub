@@ -60,9 +60,10 @@
             Category
             <div class="text-secondary small fst-italic">(broadcast)</div>
           </th>
-          <th>Status</th>
+          <th style="width:120px;">System</th>
           <th class="text-end">Payout</th>
-          <th style="min-width:160px;">Claim Status</th>
+          <th style="width:160px;">Claim Status</th>
+          <th style="width:50px;">Fitting</th>
           <th style="width:70px;">Flags</th>
           <th style="width:340px;">Actions</th>
         </tr>
@@ -198,6 +199,28 @@
 
           </td>
 
+          <!-- Fit flags (cached; zero recompute) -->
+          <td>
+            <div class="d-flex flex-column gap-1">
+              {% if c.fitcheck_status == "FIT_OK" %}
+                <span class="badge text-bg-success">OK</span>
+              {% elif c.fitcheck_status == "FIT_CLOSE" %}
+                <span class="badge text-bg-warning">Close</span>
+              {% elif c.fitcheck_status == "FIT_MISMATCH" %}
+                <span class="badge text-bg-danger">Mismatch</span>
+              {% elif c.fitcheck_status == "NO_DOCTRINE_FIT" %}
+                <span class="badge text-bg-secondary">No Fit</span>
+              {% else %}
+                <span class="badge text-bg-secondary">—</span>
+              {% endif %}
+
+              {% if c.no_rigs_flag %}
+                <span class="badge text-bg-danger">No Rigs</span>
+              {% endif %}
+            </div>
+          </td>
+
+
           <!-- FLAGS COLUMN -->
           <td>
             <div class="d-flex flex-column gap-1">
@@ -207,7 +230,13 @@
               {% if c.flag_npc %}
                 <span class="badge text-bg-warning">NPC</span>
               {% endif %}
-              {% if not c.flag_blue and not c.flag_npc %}
+              {% if c.flag_corp_mismatch %}
+                <span class="badge text-bg-warning">Corp</span>
+              {% endif %}
+              {% if c.flag_non_tnt %}
+                <span class="badge text-bg-danger">Non-TNT</span>
+              {% endif %}
+              {% if not c.flag_blue and not c.flag_npc and not c.flag_corp_mismatch and not c.flag_non_tnt %}
                 <span class="text-secondary small">—</span>
               {% endif %}
             </div>
@@ -215,12 +244,12 @@
 
           <!-- ACTIONS COLUMN -->
           <td>
-            <form method="post" class="d-flex flex-column gap-2" style="min-width: 320px;">
+            <form method="post" class="d-flex flex-column gap-2" style="width: 280px;">
               {% csrf_token %}
 
               <!-- All buttons on ONE row -->
               <div class="d-flex flex-wrap gap-2">
-                <a class="btn btn-info btn-sm"
+                <a class="btn btn-info btn-sm text-dark"
                   href="{% url 'srp:claim_detail' c.id %}">
                   View
                 </a>

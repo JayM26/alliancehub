@@ -1,11 +1,15 @@
-import re  # pyright: ignore[reportMissingModuleSource]
+from __future__ import annotations
+
+import re
 from typing import (
     Optional,
     Tuple,
     Iterable,
-)  # pyright: ignore[reportMissingModuleSource]
-from .models import EsiTypeCache  # pyright: ignore[reportMissingModuleSource]
+)
 import requests  # pyright: ignore[reportMissingModuleSource]
+
+from .models import EsiTypeCache, EsiEntityCache
+
 
 ESI_BASE = "https://esi.evetech.net/latest"
 UA = "AllianceHub-SRP/1.0"
@@ -36,6 +40,93 @@ def esi_get_json(path: str) -> dict:
     r = requests.get(url, headers={"User-Agent": UA}, timeout=15)
     r.raise_for_status()
     return r.json()
+
+
+def fetch_type_ids_by_names(type_names: list[str]) -> dict[str, int]:
+    """
+    Uses ESI /universe/ids/ to resolve type names -> type_id.
+    This endpoint accepts a JSON array of strings via POST.
+    Returns mapping for types only.
+    """
+    if not type_names:
+        return {}
+
+    url = f"{ESI_BASE}/universe/ids/?datasource=tranquility"
+    r = requests.post(
+        url,
+        json=type_names,
+        headers={"User-Agent": UA},
+        timeout=15,
+    )
+    r.raise_for_status()
+    data = r.json() or {}
+
+    out: dict[str, int] = {}
+    for row in data.get("inventory_types") or []:
+        name = (row.get("name") or "").strip()
+        tid = row.get("id")
+        if name and tid:
+            out[name] = int(tid)
+    return out
+
+
+def get_type_ids_by_names_cached(
+    type_names: Iterable[str], fetch_cap: int = 200
+) -> dict[str, int]:
+    """
+    Resolve item names -> type_id using DB cache first.
+    Fetches missing names from ESI /universe/ids/ in batches and stores them.
+    """
+    # Normalize + de-dupe, preserve original casing for exact-match mapping
+    names = []
+    seen = set()
+    for n in type_names:
+        nn = (n or "").strip()
+        if not nn:
+            continue
+        if nn in seen:
+            continue
+        seen.add(nn)
+        names.append(nn)
+
+    if not names:
+        return {}
+
+    # 1) Cache lookup
+    cached_qs = EsiTypeCache.objects.filter(name__in=names).values_list(
+        "name", "type_id"
+    )
+    result: dict[str, int] = {name: int(type_id) for (name, type_id) in cached_qs}
+
+    missing = [n for n in names if n not in result]
+    if not missing or fetch_cap <= 0:
+        return result
+
+    # 2) Fetch missing (bounded) from ESI in chunks (ESI accepts a list; keep chunk size reasonable)
+    to_fetch = missing[: int(fetch_cap)]
+    chunk_size = 100
+    new_rows: list[EsiTypeCache] = []
+
+    for i in range(0, len(to_fetch), chunk_size):
+        chunk = to_fetch[i : i + chunk_size]
+        try:
+            fetched = fetch_type_ids_by_names(chunk)
+        except Exception:
+            fetched = {}
+
+        for name, tid in fetched.items():
+            # Only store if it was actually requested (defensive)
+            if name in missing:
+                result[name] = int(tid)
+                new_rows.append(EsiTypeCache(type_id=int(tid), name=name))
+
+    if new_rows:
+        try:
+            EsiTypeCache.objects.bulk_create(new_rows, ignore_conflicts=True)
+        except Exception:
+            pass
+
+    return result
 
 
 def fetch_killmail(killmail_id: int, killmail_hash: str) -> dict:
@@ -146,3 +237,62 @@ def get_type_names_cached(
 def fetch_character_name(character_id: int) -> str:
     data = esi_get_json(f"/characters/{character_id}/")
     return data.get("name") or ""
+
+
+def fetch_corp_name(corp_id: int) -> str:
+    data = esi_get_json(f"/corporations/{corp_id}/")
+    return data.get("name") or ""
+
+
+def fetch_alliance_name(alliance_id: int) -> str:
+    data = esi_get_json(f"/alliances/{alliance_id}/")
+    # alliances endpoint is a list in some contexts, but /alliances/{id}/ is an object with "name"
+    return data.get("name") or ""
+
+
+def get_entity_names_cached(
+    entity_type: str, ids: Iterable[int], fetch_cap: int = 40
+) -> dict[int, str]:
+    """
+    Cache for corp/alliance IDs -> names.
+    entity_type: "corp" or "alliance"
+    """
+    et = (entity_type or "").strip().lower()
+    ids2 = [int(x) for x in set(ids) if x]
+    if not ids2:
+        return {}
+
+    cached = EsiEntityCache.objects.filter(entity_type=et, entity_id__in=ids2)
+    result = {int(row.entity_id): row.name for row in cached}
+
+    missing = [i for i in ids2 if i not in result]
+    if not missing:
+        return result
+
+    to_fetch = missing[: max(0, int(fetch_cap))]
+    new_rows = []
+
+    for eid in to_fetch:
+        try:
+            if et == "corp":
+                name = fetch_corp_name(int(eid))
+            elif et == "alliance":
+                name = fetch_alliance_name(int(eid))
+            else:
+                continue
+
+            if name:
+                result[int(eid)] = name
+                new_rows.append(
+                    EsiEntityCache(entity_type=et, entity_id=int(eid), name=name)
+                )
+        except Exception:
+            pass
+
+    if new_rows:
+        try:
+            EsiEntityCache.objects.bulk_create(new_rows, ignore_conflicts=True)
+        except Exception:
+            pass
+
+    return result

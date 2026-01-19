@@ -1,5 +1,12 @@
 from django.contrib import admin  # pyright: ignore[reportMissingModuleSource]
-from .models import ShipPayout, SRPClaim, SRPConfig, ClaimReview
+from .models import (
+    ShipPayout,
+    SRPClaim,
+    SRPConfig,
+    ClaimReview,
+    DoctrineFit,
+    DoctrineFitItem,
+)
 
 
 @admin.register(ShipPayout)
@@ -102,3 +109,26 @@ class SRPConfigAdmin(admin.ModelAdmin):
         "auto_calculate_payouts",
         "default_multiplier",
     )
+
+
+class DoctrineFitItemInline(admin.TabularInline):
+    model = DoctrineFitItem
+    extra = 0
+    fields = ("slot_group", "type_id", "type_name", "qty")
+    readonly_fields = ("type_name",)
+
+
+@admin.register(DoctrineFit)
+class DoctrineFitAdmin(admin.ModelAdmin):
+    list_display = (
+        "ship_name",
+        "ship_type_id",
+        "name",
+        "active",
+        "updated_at",
+        "updated_by",
+    )
+    list_filter = ("active",)
+    search_fields = ("ship_name", "name", "ship_type_id")
+    inlines = [DoctrineFitItemInline]
+    readonly_fields = ("created_at", "updated_at")

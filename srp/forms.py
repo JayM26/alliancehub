@@ -4,7 +4,11 @@ from decimal import (
     Decimal,
     InvalidOperation,
 )  # pyright: ignore[reportMissingModuleSource]
-from .models import SRPClaim, ShipPayout  # pyright: ignore[reportMissingModuleSource]
+from .models import (
+    SRPClaim,
+    ShipPayout,
+    DoctrineFit,
+)  # pyright: ignore[reportMissingModuleSource]
 
 
 class SRPClaimForm(forms.ModelForm):
@@ -118,3 +122,20 @@ class SRPClaimReviewerEditForm(forms.ModelForm):
             raise forms.ValidationError("Manual category requires a payout amount.")
 
         return cleaned
+
+
+class DoctrineFitImportForm(forms.Form):
+    eft_text = forms.CharField(
+        widget=forms.Textarea(attrs={"class": "form-control", "rows": 18}),
+        help_text="Paste a full EFT fit block (including the [Ship, Fit Name] header).",
+    )
+
+
+class DoctrineFitEditForm(forms.ModelForm):
+    class Meta:
+        model = DoctrineFit
+        fields = ["name", "active"]
+        widgets = {
+            "name": forms.TextInput(attrs={"class": "form-control"}),
+            "active": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+        }

@@ -6,3 +6,4 @@ django-crispy-forms==2.3
 crispy-bootstrap5==0.7
 requests==2.32.3
 gunicorn
+whitenoise==6.11.0

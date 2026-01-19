@@ -1,4 +1,4 @@
-from django.db import migrations, models
+from django.db import migrations, models  # pyright: ignore[reportMissingModuleSource]
 
 
 class Migration(migrations.Migration):

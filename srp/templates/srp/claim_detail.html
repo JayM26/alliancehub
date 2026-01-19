@@ -3,6 +3,7 @@
 {% load srp_extras %}
 
 {% block content %}
+
 <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
   <div>
     <h2 class="mb-1">SRP Claim #{{ claim.id }}</h2>
@@ -39,13 +40,36 @@
       </div>
       <div class="card-body">
         <div class="row g-3">
+
           <div class="col-6">
             <div class="text-secondary small">Submitter</div>
             <div>{{ claim.submitter.username }}</div>
+            <div class="text-secondary small">
+              {% if submitter_corp %}{{ submitter_corp }}{% else %}—{% endif %}
+              {% if submitter_alliance %}
+                <span class="text-secondary">/</span> {{ submitter_alliance }}
+              {% endif %}
+            </div>
           </div>
+
           <div class="col-6">
             <div class="text-secondary small">Victim (ESI)</div>
             <div>{{ claim.victim_character_name|default:"—" }}</div>
+            <div class="text-secondary small">
+              {% if victim_corp %}{{ victim_corp }}{% else %}—{% endif %}
+              {% if victim_alliance %}
+                <span class="text-secondary">/</span> {{ victim_alliance }}
+              {% endif %}
+            </div>
+
+            <div class="mt-1 d-flex flex-wrap gap-1">
+              {% if corp_mismatch %}
+                <span class="badge text-bg-warning">Corp mismatch</span>
+              {% endif %}
+              {% if victim_non_tnt %}
+                <span class="badge text-bg-danger">Non-TNT</span>
+              {% endif %}
+            </div>
           </div>
 
           <div class="col-6">
@@ -126,10 +150,13 @@
             <div class="small" style="white-space:pre-wrap;">{{ claim.note }}</div>
           </div>
           {% endif %}
+
         </div>
       </div>
     </div>
   </div>
+
+
 
   <!-- Reviewer Actions + Auto-checks -->
   <div class="col-lg-6">
@@ -145,7 +172,6 @@
         <!-- Auto-checks (flag-only) -->
         <div class="mb-3">
           <strong>Auto-checks</strong>
-          <div class="text-secondary small">Flags only — no auto-deny.</div>
 
           <div class="mt-2 d-flex flex-wrap gap-2">
             {% if npc_only %}
@@ -165,6 +191,17 @@
             {% else %}
               <span class="badge text-bg-success">No blues detected</span>
             {% endif %}
+            {% if corp_mismatch %}
+              <span class="badge text-bg-warning">Corp mismatch (submitter vs victim)</span>
+            {% else %}
+              <span class="badge text-bg-success">Corps Match</span>
+            {% endif %}
+            {% if victim_non_tnt %}
+              <span class="badge text-bg-danger">Victim not in TNT</span>
+            {% else %}
+              <span class="badge text-bg-success">Victim is in TNT</span>
+            {% endif %}
+
           </div>
 
           <div class="mt-3">
@@ -296,57 +333,215 @@
   </div>
 
   <!-- Fitting / Items -->
-  <div class="col-12">
-    <div class="card bg-dark border-secondary">
-      <div class="card-header border-secondary">
-        <strong>Fitting (ESI Items)</strong>
-        <span class="text-secondary small">Type names will appear as the cache warms up.</span>
-      </div>
-      <div class="card-body">
-        {% if fitting_groups %}
-          {% for group_name, group_items in fitting_groups %}
+ <div class="card-body">
+
+  {# --- Fit Check Summary --- #}
+  <div class="mb-3">
+    <div class="d-flex flex-wrap gap-2 align-items-center">
+      <strong>Fit Check:</strong>
+
+      {% if fitcheck_status == "FIT_OK" %}
+        <span class="badge text-bg-success">Fit OK</span>
+      {% elif fitcheck_status == "FIT_CLOSE" %}
+        <span class="badge text-bg-warning">Fit Close</span>
+      {% elif fitcheck_status == "FIT_MISMATCH" %}
+        <span class="badge text-bg-danger">Fit Mismatch</span>
+      {% elif fitcheck_status == "NO_DOCTRINE_FIT" %}
+        <span class="badge text-bg-secondary">No Doctrine Fit</span>
+      {% else %}
+        <span class="badge text-bg-secondary">—</span>
+      {% endif %}
+
+      {% if fitcheck_best_fit %}
+        <span class="text-secondary small">
+          Best match: <strong class="text-light">{{ fitcheck_best_fit.name }}</strong>
+        </span>
+      {% elif fitcheck_data.best_fit_name %}
+        <span class="text-secondary small">
+          Best match: <strong class="text-light">{{ fitcheck_data.best_fit_name }}</strong>
+        </span>
+      {% endif %}
+
+      {% if fitcheck_data.match_pct %}
+        <span class="text-secondary small">({{ fitcheck_data.match_pct|floatformat:2 }} match)</span>
+      {% endif %}
+
+      {% if no_rigs_flag %}
+        <span class="badge text-bg-danger">No Rigs Equipped</span>
+      {% endif %}
+    </div>
+
+    <div class="text-secondary small mt-1">
+      Fit check compares <code>High / Mid / Low / Rigs</code> only. Cargo/drones/fighters are ignored. Possible flags are Fit OK, Fit CLose, Fit Mismatch, and No Doctrine Fit.
+    </div>
+    {% if is_reviewer %}
+      <form method="post" action="{% url 'srp:fitcheck_rerun' claim.id %}" class="d-inline">
+        {% csrf_token %}
+        <button class="btn btn-outline-secondary btn-sm" type="submit">
+          Re-run fit check
+        </button>
+      </form>
+    {% endif %}
+
+  </div>
+
+  {# --- Differences (only when needed) --- #}
+  {% if fitcheck_status == "FIT_CLOSE" or fitcheck_status == "FIT_MISMATCH" %}
+    {% with diff=fitcheck_data.diff %}
+      {% if diff %}
+        <div class="row g-2 mb-3">
+          <div class="col-lg-6">
+            <div class="card bg-dark border-secondary h-100">
+              <div class="card-header border-secondary">
+                <strong>Missing (Expected)</strong>
+              </div>
+              <div class="card-body">
+                {% if diff.missing %}
+                  {% for group, items in diff.missing.items %}
+                    <div class="mb-2">
+                      <div class="text-secondary small">{{ group }}</div>
+                      <ul class="mb-0">
+                        {% for x in items %}
+                          <li>
+                            {{ type_names|get_item:x.type_id|default:x.type_id }}
+                            <span class="text-secondary small">x{{ x.qty }}</span>
+                          </li>
+                        {% endfor %}
+                      </ul>
+                    </div>
+                  {% endfor %}
+                {% else %}
+                  <div class="text-secondary">None.</div>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+
+          <div class="col-lg-6">
+            <div class="card bg-dark border-secondary h-100">
+              <div class="card-header border-secondary">
+                <strong>Extra (On Kill)</strong>
+              </div>
+              <div class="card-body">
+                {% if diff.extra %}
+                  {% for group, items in diff.extra.items %}
+                    <div class="mb-2">
+                      <div class="text-secondary small">{{ group }}</div>
+                      <ul class="mb-0">
+                        {% for x in items %}
+                          <li>
+                            {{ type_names|get_item:x.type_id|default:x.type_id }}
+                            <span class="text-secondary small">x{{ x.qty }}</span>
+                          </li>
+                        {% endfor %}
+                      </ul>
+                    </div>
+                  {% endfor %}
+                {% else %}
+                  <div class="text-secondary">None.</div>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        </div>
+      {% endif %}
+    {% endwith %}
+  {% endif %}
+
+  {# --- Fitting / Items (simplified: total qty, not destroyed/dropped) --- #}
+  {% if fitting_groups %}
+
+    {# Always show core groups #}
+    {% for group_name, group_items in fitting_groups %}
+      {% if group_name in "High Slots,Mid Slots,Low Slots,Rigs" %}
+        <div class="mb-3">
+          <div class="text-center mb-1">
+            <strong>{{ group_name }}</strong>
+          </div>
+
+          <div class="table-responsive">
+            <table class="table table-sm table-dark table-striped mt-2">
+              <thead>
+                <tr>
+                  <th class="text-start">Item</th>
+                  <th class="text-end">Qty</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for it in group_items %}
+                  <tr>
+                    <td class="text-start">
+                      {% if it.item_type_id %}
+                        {{ type_names|get_item:it.item_type_id|default:it.item_type_id }}
+                      {% else %}
+                        —
+                      {% endif %}
+                    </td>
+                    <td class="text-end">{{ it.qty_total|default:0|intcomma }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      {% endif %}
+    {% endfor %}
+
+    {# Collapsible "Other" groups (Cargo, Drone Bay, Other) #}
+    <div class="mt-2">
+      <button class="btn btn-outline-secondary btn-sm"
+              type="button"
+              data-bs-toggle="collapse"
+              data-bs-target="#collapseFittingOther"
+              aria-expanded="false"
+              aria-controls="collapseFittingOther">
+        Show Cargo / Drones / Other
+      </button>
+
+      <div class="collapse mt-3" id="collapseFittingOther">
+        {% for group_name, group_items in fitting_groups %}
+          {% if group_name not in "High Slots,Mid Slots,Low Slots,Rigs" %}
             <div class="mb-3">
-              <div class="d-flex justify-content-between align-items-center">
+              <div class="text-center mb-1 text-uppercase small">
                 <strong>{{ group_name }}</strong>
-                <span class="text-secondary small">{{ group_items|length }}</span>
               </div>
 
               <div class="table-responsive">
                 <table class="table table-sm table-dark table-striped mt-2">
                   <thead>
                     <tr>
-                      <th>Item</th>
-                      <th class="text-end">Destroyed</th>
-                      <th class="text-end">Dropped</th>
+                      <th class="text-start">Item</th>
+                      <th class="text-end">Qty</th>
                     </tr>
                   </thead>
                   <tbody>
                     {% for it in group_items %}
                       <tr>
-                        <td>
+                        <td class="text-start">
                           {% if it.item_type_id %}
                             {{ type_names|get_item:it.item_type_id|default:it.item_type_id }}
-                            <div class="text-secondary small">({{ it.item_type_id }})</div>
                           {% else %}
                             —
                           {% endif %}
                         </td>
-                        <td class="text-end">{{ it.quantity_destroyed|default:"0"|intcomma }}</td>
-                        <td class="text-end">{{ it.quantity_dropped|default:"0"|intcomma }}</td>
+                        <td class="text-end">{{ it.qty_total|default:0|intcomma }}</td>
                       </tr>
                     {% endfor %}
                   </tbody>
                 </table>
               </div>
             </div>
-          {% endfor %}
-        {% else %}
-          <div class="text-secondary">
-            No item data stored for this claim yet (ESI pull may have failed).
-          </div>
-        {% endif %}
+          {% endif %}
+        {% endfor %}
       </div>
     </div>
-  </div>
+
+  {% else %}
+    <div class="text-secondary">
+      No item data stored for this claim yet (ESI pull may have failed).
+    </div>
+  {% endif %}
+
+
 </div>
 {% endblock %}

@@ -40,11 +40,39 @@
     justify-content: center;
     line-height: 1.2;
   }
+
+    /* SRP menu emphasis */
+  .srp-menu {
+    background-color: #343a40;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 0.375rem;
+    padding: 0.25rem 0.5rem;
+  }
+
+  .srp-menu .dropdown-toggle {
+    color: #f8f9fa;
+    font-weight: 600;
+  }
+
+  .srp-menu .dropdown-toggle:hover {
+    color: #ffffff;
+  }
+
+  .srp-menu .dropdown-menu {
+    background-color: #212529;
+    border-color: rgba(255, 255, 255, 0.15);
+  }
+
+  .srp-menu .dropdown-item {
+    color: #f8f9fa;
+  }
+
+  .srp-menu .dropdown-item:hover {
+    background-color: #343a40;
+  }
 </style>
-
-
-
 </head>
+
 <body class="bg-dark text-light">
 
 <!-- Navbar -->
@@ -66,6 +94,51 @@
       <ul class="navbar-nav ms-auto align-items-center">
 
         {% if user.is_authenticated %}
+
+          <!-- SRP Menu (only shows what the user can access) -->
+          <li class="nav-item dropdown me-4 srp-menu">
+            <a class="nav-link dropdown-toggle"
+              href="#"
+              role="button"
+              data-bs-toggle="dropdown"
+              aria-expanded="false">
+              🛡️ SRP
+            </a>
+
+            <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
+              <li>
+                <a class="dropdown-item" href="{% url 'srp:submit_claim' %}">Submit Claim</a>
+              </li>
+              <li>
+                <a class="dropdown-item" href="{% url 'srp:my_claims' %}">My Claims</a>
+              </li>
+              <li>
+                <a class="dropdown-item" href="{% url 'srp:payout_table' %}">Payout Table</a>
+              </li>
+
+              {% if perms.srp.can_review_srp %}
+                <li><hr class="dropdown-divider"></li>
+                <li>
+                  <a class="dropdown-item" href="{% url 'srp:review_queue' %}">Review Queue</a>
+                </li>
+
+              {% endif %}
+
+              {% if perms.srp.can_manage_srp_payouts %}
+                <li><hr class="dropdown-divider"></li>
+                <li>
+                  <a class="dropdown-item" href="{% url 'srp:admin_overview' %}">SRP Admin Overview</a>
+                </li>
+                <li>
+                  <a class="dropdown-item" href="{% url 'srp:admin_payouts' %}">Ships and Payouts Admin</a>
+                </li>
+                <li>
+                  <a class="dropdown-item" href="{% url 'srp:doctrine_fit_list' %}">Fitting Admin</a>
+                </li>
+              {% endif %}
+            </ul>
+          </li>
+
           <li class="nav-item me-2">
             <span class="navbar-text text-light">
               Logged in as
@@ -89,6 +162,7 @@
               <button type="submit" class="btn btn-danger btn-sm ms-2">Logout</button>
             </form>
           </li>
+
         {% else %}
           <li class="nav-item">
             <a class="nav-link" href="/accounts/login/">Login</a>
@@ -134,7 +208,7 @@
     <p>AllianceHub © {{ now|date:"Y" }}</p>
   </footer>
 
-  <!-- Bootstrap JS (optional for components like modals) -->
+  <!-- Bootstrap JS -->
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
   {% block extra_js %}{% endblock %}

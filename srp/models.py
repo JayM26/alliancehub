@@ -1,7 +1,7 @@
 from django.conf import settings  # pyright: ignore[reportMissingModuleSource]
-from django.core.validators import (
+from django.core.validators import (  # pyright: ignore[reportMissingModuleSource]
     MinValueValidator,
-)  # pyright: ignore[reportMissingModuleSource]
+)
 from django.db import models  # pyright: ignore[reportMissingModuleSource]
 from django.utils import timezone  # pyright: ignore[reportMissingModuleSource]
 
@@ -64,6 +64,24 @@ class EsiTypeCache(models.Model):
         return f"{self.type_id} - {self.name}"
 
 
+class EsiEntityCache(models.Model):
+    """
+    Cache for corp/alliance IDs -> name (lightweight).
+    """
+
+    entity_type = models.CharField(max_length=16)  # "corp" or "alliance"
+    entity_id = models.BigIntegerField(db_index=True)
+    name = models.CharField(max_length=255)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [("entity_type", "entity_id")]
+        indexes = [models.Index(fields=["entity_type", "entity_id"])]
+
+    def __str__(self):
+        return f"{self.entity_type}:{self.entity_id} - {self.name}"
+
+
 class SRPConfig(models.Model):
     """One-row configuration for ceilings and behavior."""
 
@@ -75,6 +93,7 @@ class SRPConfig(models.Model):
     )
     auto_calculate_payouts = models.BooleanField(default=True)
     default_multiplier = models.DecimalField(max_digits=6, decimal_places=2, default=1)
+    self_alliance_ids = models.JSONField(default=list, blank=True)
     blue_alliance_ids = models.JSONField(default=list, blank=True)
     blue_corp_ids = models.JSONField(default=list, blank=True)
 
@@ -180,6 +199,28 @@ class SRPClaim(models.Model):
         null=True,
         help_text="Optional ship fitting data (future use)",
     )
+
+    # -------------------------
+    # Fit checker
+    # -------------------------
+    fitcheck_status = models.CharField(max_length=30, blank=True, db_index=True)
+    fitcheck_best_fit = models.ForeignKey(
+        "DoctrineFit",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="best_for_claims",
+    )
+    fitcheck_selected_fit = models.ForeignKey(
+        "DoctrineFit",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="selected_for_claims",
+    )
+    fitcheck_data = models.JSONField(null=True, blank=True)
+    fitcheck_updated_at = models.DateTimeField(null=True, blank=True)
+    no_rigs_flag = models.BooleanField(default=False, db_index=True)
 
     # -------------------------
     # Review / processing
@@ -319,3 +360,68 @@ class PayoutImportJob(models.Model):
 
     def __str__(self):
         return f"PayoutImportJob #{self.id} ({self.created_at:%Y-%m-%d %H:%M})"
+
+
+# srp/models.py
+
+
+class DoctrineFit(models.Model):
+    """
+    One stored doctrine fit for one ship hull (multiple fits per hull allowed).
+    Imported from EFT text; only High/Mid/Low/Rigs are used for matching.
+    """
+
+    ship_type_id = models.BigIntegerField(db_index=True)
+    ship_name = models.CharField(max_length=255, blank=True)
+
+    name = models.CharField(
+        max_length=255
+    )  # keep full fit name, e.g. "TigersClaw - DPS - V25.1"
+    eft_text = models.TextField(help_text="Original EFT text for this fit.")
+
+    active = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_doctrine_fits",
+    )
+
+    class Meta:
+        ordering = ["ship_name", "name"]
+        indexes = [
+            models.Index(fields=["ship_type_id", "active"]),
+        ]
+
+    def __str__(self):
+        return f"{self.ship_name or self.ship_type_id} — {self.name}"
+
+
+class DoctrineFitItem(models.Model):
+    class SlotGroup(models.TextChoices):
+        HIGH = "HIGH", "High"
+        MID = "MID", "Mid"
+        LOW = "LOW", "Low"
+        RIG = "RIG", "Rig"
+
+    doctrine_fit = models.ForeignKey(
+        DoctrineFit, on_delete=models.CASCADE, related_name="items"
+    )
+    slot_group = models.CharField(max_length=10, choices=SlotGroup.choices)
+    type_id = models.BigIntegerField(db_index=True)
+    type_name = models.CharField(max_length=255, blank=True)
+    qty = models.PositiveIntegerField(default=1)
+
+    class Meta:
+        ordering = ["doctrine_fit_id", "slot_group", "type_name", "type_id"]
+        indexes = [
+            models.Index(fields=["doctrine_fit", "slot_group"]),
+            models.Index(fields=["type_id"]),
+        ]
+
+    def __str__(self):
+        return f"{self.doctrine_fit_id} {self.slot_group}: {self.type_name or self.type_id} x{self.qty}"

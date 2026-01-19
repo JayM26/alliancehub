@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% load humanize %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
+  <div>
+    <h2 class="mb-1">{{ fit.ship_name }} — {{ fit.name }}</h2>
+    <div class="text-secondary small">
+      {% if fit.active %}
+        <span class="badge text-bg-success">Active</span>
+      {% else %}
+        <span class="badge text-bg-secondary">Inactive</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary btn-sm" href="{% url 'srp:doctrine_fit_list' %}">
+      Back to Fits
+    </a>
+
+    <form method="post" action="{% url 'srp:doctrine_fit_deactivate' fit.id %}">
+      {% csrf_token %}
+      <button class="btn btn-outline-warning btn-sm" type="submit">
+        Deactivate
+      </button>
+    </form>
+
+    <form method="post"
+          action="{% url 'srp:doctrine_fit_delete' fit.id %}"
+          onsubmit="return confirm('Delete this fit permanently? This cannot be undone.');">
+      {% csrf_token %}
+      <button class="btn btn-outline-danger btn-sm" type="submit">
+        Delete
+      </button>
+    </form>
+  </div>
+</div>
+
+<div class="card bg-dark border-secondary mb-3">
+  <div class="card-header border-secondary">
+    <strong>Fit Settings</strong>
+  </div>
+  <div class="card-body">
+    <form method="post">
+      {% csrf_token %}
+      <div class="row g-2 align-items-end">
+        <div class="col-md-8">
+          <label class="form-label text-secondary">Fit Name</label>
+          {{ form.name }}
+        </div>
+        <div class="col-md-2">
+          <label class="form-label text-secondary">Active</label>
+          <div class="form-check mt-2">
+            {{ form.active }}
+            <label class="form-check-label">Enabled</label>
+          </div>
+        </div>
+        <div class="col-md-2 text-end">
+          <button class="btn btn-outline-info btn-sm" type="submit">Save</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card bg-dark border-secondary mb-3">
+  <div class="card-header border-secondary">
+    <strong>Overwrite from EFT</strong>
+    <span class="text-secondary small ms-2">This replaces the stored items for this fit.</span>
+  </div>
+  <div class="card-body">
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="overwrite" value="1" />
+
+      <textarea name="eft_text"
+                class="form-control"
+                rows="10"
+                placeholder="Paste full EFT here...">{{ fit.eft_text }}</textarea>
+
+      <div class="mt-2 d-flex justify-content-end">
+        <button class="btn btn-outline-warning btn-sm" type="submit">Overwrite Fit</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card bg-dark border-secondary">
+  <div class="card-header border-secondary d-flex justify-content-between align-items-center">
+    <strong>Normalized Items (High/Mid/Low/Rigs)</strong>
+    <span class="text-secondary small">{{ items|length }} items</span>
+  </div>
+
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm table-dark table-striped align-middle mb-0">
+        <thead>
+          <tr>
+            <th style="width: 140px;">Slot</th>
+            <th>Item</th>
+            <th class="text-end" style="width: 90px;">Qty</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for it in items %}
+            <tr>
+              <td class="text-nowrap">{{ it.slot_group }}</td>
+              <td>{{ it.type_name }}</td>
+              <td class="text-end">{{ it.qty|intcomma }}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="3" class="text-secondary p-3">No items parsed.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

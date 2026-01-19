@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+  <h2 class="mb-0">Import EFT Fit</h2>
+  <a class="btn btn-outline-secondary btn-sm" href="{% url 'srp:doctrine_fit_list' %}">
+    Back to Fits
+  </a>
+</div>
+
+<div class="card bg-dark border-secondary">
+  <div class="card-header border-secondary">
+    <strong>EFT Paste</strong>
+    <span class="text-secondary small ms-2">Paste a full EFT block including the [Ship, Fit Name] header</span>
+  </div>
+
+  <div class="card-body">
+    <form method="post">
+      {% csrf_token %}
+
+      <div class="mb-3">
+        <label class="form-label text-secondary">EFT Fit</label>
+        {{ form.eft_text }}
+        {% if form.eft_text.help_text %}
+          <div class="text-secondary small mt-1">{{ form.eft_text.help_text }}</div>
+        {% endif %}
+      </div>
+
+      <div class="d-flex gap-2">
+        <button class="btn btn-outline-info btn-sm" type="submit">Import</button>
+        <a class="btn btn-outline-secondary btn-sm" href="{% url 'srp:doctrine_fit_list' %}">
+          Cancel
+        </a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
