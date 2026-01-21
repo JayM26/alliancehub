@@ -17,17 +17,22 @@ Including another URLconf
 
 from django.contrib import admin  # pyright: ignore[reportMissingModuleSource]
 from django.urls import path, include  # pyright: ignore[reportMissingModuleSource]
-from django.shortcuts import render  # pyright: ignore[reportMissingModuleSource]
 
-
-def home(request):
-    return render(request, "home.html")
+from core.views import (
+    dashboard,
+    home,
+    link_character,
+)  # pyright: ignore[reportMissingModuleSource]
 
 
 urlpatterns = [
     path("", home, name="home"),
     path("admin/", admin.site.urls),
     path("sso/", include("eve_sso.urls")),
-    path("accounts/", include("django.contrib.auth.urls")),
     path("srp/", include("srp.urls")),
+    path("dashboard/", dashboard, name="dashboard"),
+    path("link-character/", link_character, name="link_character"),
+    # Accounts / auth
+    path("accounts/", include("accounts.urls")),
+    path("accounts/", include("django.contrib.auth.urls")),
 ]

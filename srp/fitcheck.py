@@ -8,21 +8,10 @@ from typing import Any
 from django.utils import timezone  # pyright: ignore[reportMissingModuleSource]
 
 from .models import DoctrineFit, DoctrineFitItem, SRPClaim
+from .slots import slot_group_from_flag  # ✅ shared helper
 
 
 SLOT_GROUPS = ("High Slots", "Mid Slots", "Low Slots", "Rigs")
-
-
-def slot_group_from_flag(flag: int) -> str | None:
-    if 27 <= flag <= 34:
-        return "High Slots"
-    if 19 <= flag <= 26:
-        return "Mid Slots"
-    if 11 <= flag <= 18:
-        return "Low Slots"
-    if 92 <= flag <= 94:
-        return "Rigs"
-    return None
 
 
 @dataclass(frozen=True)
@@ -66,7 +55,7 @@ def extract_actual_hmlr(killmail_raw: dict[str, Any]) -> dict[str, Counter[int]]
 
 def build_expected_hmlr(fit: DoctrineFit) -> dict[str, Counter[int]]:
     expected: dict[str, Counter[int]] = {g: Counter() for g in SLOT_GROUPS}
-    items = fit.items.all().only("slot_group", "type_id", "qty")
+    items = fit.items.all()
 
     slot_map = {
         DoctrineFitItem.SlotGroup.HIGH: "High Slots",
@@ -187,8 +176,11 @@ def compute_fitcheck(claim: SRPClaim) -> dict[str, Any]:
         }
 
     fits = list(
-        DoctrineFit.objects.filter(ship_type_id=claim.ship_type_id, active=True)
+        DoctrineFit.objects.filter(
+            ship_type_id=claim.ship_type_id, active=True
+        ).prefetch_related("items")
     )
+
     if not fits:
         return {
             "status": "NO_DOCTRINE_FIT",

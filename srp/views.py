@@ -1,55 +1,86 @@
+"""
+SRP views.
+
+End-state principles:
+- Views own HTTP concerns (request parsing, permissions, rendering, redirects).
+- Business logic is kept in model methods or dedicated helpers (fitcheck, ESI helpers, importer).
+- Avoid duplicated “magic” constants and slot grouping logic; use shared helpers consistently.
+- Keep templates simple by attaching clearly-named computed attributes to claim objects
+  (e.g., flag_* and fitting preview fields) only when needed for that view.
+"""
+
+from __future__ import annotations
+
+import csv
+import io
+import re
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+from typing import Any
+
 from django.contrib import messages  # pyright: ignore[reportMissingModuleSource]
 from django.contrib.auth.decorators import (  # pyright: ignore[reportMissingModuleSource]
     login_required,
     permission_required,
 )
+from django.db import transaction  # pyright: ignore[reportMissingModuleSource]
 from django.db.models import (  # pyright: ignore[reportMissingModuleSource]
-    Q,
     Count,
-    Sum,
-    Min,
     Max,
+    Q,
+    Sum,
+)
+from django.db.models.functions import (  # pyright: ignore[reportMissingModuleSource]
+    Coalesce,
 )
 from django.shortcuts import (  # pyright: ignore[reportMissingModuleSource]
     get_object_or_404,
     redirect,
     render,
 )
-from django.db.models.functions import (  # pyright: ignore[reportMissingModuleSource]
-    Coalesce,
-)
 from django.utils import timezone  # pyright: ignore[reportMissingModuleSource]
-from django.db import transaction  # pyright: ignore[reportMissingModuleSource]
 from django.views.decorators.http import (  # pyright: ignore[reportMissingModuleSource]
     require_POST,
 )
 
-from .esi import populate_claim_from_esi, fetch_type_name, get_type_names_cached
+from .esi import fetch_type_name, get_type_names_cached, populate_claim_from_esi
+from .fit_importer import import_eft_fit
+from .fitcheck import ensure_fitcheck_cached
 from .forms import (
-    SRPClaimForm,
-    ShipPayoutForm,
-    SRPClaimReviewerEditForm,
-    DoctrineFitImportForm,
     DoctrineFitEditForm,
+    DoctrineFitImportForm,
+    ShipPayoutForm,
+    SRPClaimForm,
+    SRPClaimReviewerEditForm,
 )
 from .models import (
     ClaimReview,
-    SRPClaim,
-    ShipPayout,
-    SRPConfig,
-    PayoutImportJob,
     DoctrineFit,
+    PayoutImportJob,
+    ShipPayout,
+    SRPClaim,
+    SRPConfig,
 )
-from .fitcheck import ensure_fitcheck_cached
-from .fit_importer import import_eft_fit
-from datetime import date, datetime, timedelta
-from decimal import Decimal
-import csv
-import io
-import re
+from .slots import slot_group_from_flag
 
 
-@login_required
+# Shared display order for slot-grouped fitting output.
+SLOT_GROUP_ORDER = (
+    "High Slots",
+    "Mid Slots",
+    "Low Slots",
+    "Rigs",
+    "Cargo",
+    "Drone Bay",
+    "Other",
+)
+
+
+# ---------------------------------------------------------------------------
+# User views
+# ---------------------------------------------------------------------------
+
+
 def payout_table(request):
     """View showing all ships and their payout values."""
     ships = ShipPayout.objects.all()
@@ -67,18 +98,18 @@ def submit_claim(request):
             claim.character_name = request.user.username
             claim.save()
 
-            # Try to populate from ESI link (Option B)
+            # Best-effort ESI enrichment (never block submission).
             try:
                 ok = populate_claim_from_esi(claim)
 
-                # If we have a ship_type_id but ship_name didn't resolve, try once more here
+                # If we have a ship_type_id but ship_name didn't resolve, try once more.
                 if claim.ship_type_id and not claim.ship_name:
                     try:
                         claim.ship_name = fetch_type_name(int(claim.ship_type_id))
                     except Exception:
                         pass
 
-                # If we got a ship name from ESI and no ShipPayout selected, match/create one
+                # If we got a ship name from ESI and no ShipPayout selected, match/create one.
                 if not claim.ship and claim.ship_name:
                     sp = ShipPayout.objects.filter(
                         ship_name__iexact=claim.ship_name
@@ -88,7 +119,7 @@ def submit_claim(request):
                     claim.ship = sp
                     claim.payout_amount = claim.calculate_payout()
 
-                # Optional: backfill legacy system field for display/search
+                # Optional: backfill legacy system field for display/search.
                 if claim.solar_system_name and not claim.system:
                     claim.system = claim.solar_system_name
 
@@ -110,6 +141,7 @@ def submit_claim(request):
                     request,
                     f"Your SRP claim has been submitted, but ESI pull failed: {e}",
                 )
+
             return redirect("srp:my_claims")
 
         messages.error(request, "Please correct the errors below.")
@@ -126,9 +158,9 @@ def my_claims(request):
     return render(request, "srp/my_claims.html", {"claims": claims})
 
 
-# ---------------------------
+# ---------------------------------------------------------------------------
 # Reviewer queue + actions
-# ---------------------------
+# ---------------------------------------------------------------------------
 
 
 @login_required
@@ -139,14 +171,23 @@ def review_queue(request):
     - status (default: ALL)
     - category
     - search (character/ship/system/link)
+
+    For template convenience, this view attaches computed attributes to each claim:
+    - flag_npc: bool (any NPC attacker present)
+    - flag_blue: bool (any blue corp/alliance attacker present)
+    - flag_corp_mismatch: bool (submitter corp != victim corp)
+    - flag_non_tnt: bool (victim alliance not in configured self alliance list)
+    - fitting_item_count: int
+    - fitting_groups_preview: list[tuple[group_name, list[str]]]
     """
     status = (request.GET.get("status") or "ALL").strip().upper()
     category = (request.GET.get("category") or "").strip().upper()
     search = (request.GET.get("q", "") or "").strip()
 
-    qs = SRPClaim.objects.select_related("ship", "submitter", "reviewer").all()
+    qs = SRPClaim.objects.select_related(
+        "ship", "submitter", "submitter__main_character", "reviewer"
+    ).all()
 
-    # Only filter by status if it's not ALL
     if status != "ALL":
         qs = qs.filter(status=status)
 
@@ -164,7 +205,6 @@ def review_queue(request):
 
     claims = qs.select_related("fitcheck_best_fit").order_by("submitted_at")
 
-    # --- Flag-only checks for queue (Blue + NPC present)
     cfg = SRPConfig.get()
     blue_alliance_ids = set(
         int(x) for x in (cfg.blue_alliance_ids or []) if str(x).isdigit()
@@ -174,6 +214,8 @@ def review_queue(request):
         int(x) for x in (cfg.self_alliance_ids or []) if str(x).isdigit()
     )
 
+    from collections import defaultdict
+
     for c in claims:
         km = c.killmail_raw or {}
         attackers = km.get("attackers") or []
@@ -181,12 +223,11 @@ def review_queue(request):
         npc_present = False
         blue_involved = False
 
-        # --- Submitter vs Victim flags
-        victim = km.get("victim") or {}
-        victim_corp_id = victim.get("corporation_id")
-        victim_alliance_id = victim.get("alliance_id")
+        victim_blob = km.get("victim") or {}
+        victim_corp_id = victim_blob.get("corporation_id")
+        victim_alliance_id = victim_blob.get("alliance_id")
 
-        # Submitter corp id (from linked main_character if present)
+        # Submitter corp id (from linked main_character if present).
         submitter_corp_id = None
         mc = getattr(c.submitter, "main_character", None)
         if mc:
@@ -198,13 +239,14 @@ def review_queue(request):
             and int(victim_corp_id) != int(submitter_corp_id)
         )
 
-        # Non-TNT: only evaluate if we know TNT alliance id(s) AND victim has an alliance id
+        # Non-TNT: only evaluate if we know our own alliance id(s) AND victim has an alliance id.
         c.flag_non_tnt = (
             bool(self_alliance_ids)
             and bool(victim_alliance_id)
             and int(victim_alliance_id) not in self_alliance_ids
         )
-        # --- Attacker analysis
+
+        # Attacker analysis (NPC/blue presence).
         for a in attackers:
             char_id = a.get("character_id")
             if not char_id:
@@ -217,83 +259,59 @@ def review_queue(request):
                 ):
                     blue_involved = True
 
-            # tiny early exit
             if npc_present and blue_involved:
                 break
 
-        # attach flags to the object for the template
         c.flag_npc = npc_present
         c.flag_blue = blue_involved
 
-        # --- tiny fitting preview (per-claim, first N items)
-        # --- fitting grouped preview (per-claim)
-        victim = km.get("victim") or {}
-        items = victim.get("items") or []
+        # Fitting preview (grouped, bounded).
+        items = (victim_blob.get("items") or []) if victim_blob else []
         c.fitting_item_count = len(items)
+        c.fitting_groups_preview = []  # list[tuple[str, list[str]]]
 
-        def _slot_group(flag: int) -> str:
-            # High: 27-34, Mid: 19-26, Low: 11-18, Rigs: 92-94, Cargo: 5, Drone Bay: 87
-            if 27 <= flag <= 34:
-                return "High Slots"
-            if 19 <= flag <= 26:
-                return "Mid Slots"
-            if 11 <= flag <= 18:
-                return "Low Slots"
-            if 92 <= flag <= 94:
-                return "Rigs"
-            if flag == 5:
-                return "Cargo"
-            if flag == 87:
-                return "Drone Bay"
-            return "Other"
+        if not items:
+            continue
 
-        c.fitting_groups_preview = []  # list[(group_name, list[str])]
+        # Collect type IDs (bounded, de-duped in order).
+        item_type_ids: list[int] = []
+        seen: set[int] = set()
+        for it in items:
+            tid = it.get("item_type_id")
+            if not tid:
+                continue
+            tid_i = int(tid)
+            if tid_i in seen:
+                continue
+            seen.add(tid_i)
+            item_type_ids.append(tid_i)
+            if len(item_type_ids) >= 60:
+                break
 
-        if items:
-            # resolve names (bounded)
-            item_type_ids = []
-            for it in items:
-                tid = it.get("item_type_id")
-                if tid:
-                    item_type_ids.append(int(tid))
+        type_names = get_type_names_cached(item_type_ids, fetch_cap=60)
 
-            type_names = get_type_names_cached(item_type_ids[:60], fetch_cap=60)
+        grouped: dict[str, list[str]] = defaultdict(list)
 
-            from collections import defaultdict
+        # Build lines like: "Warp Disruptor II ×1"
+        for it in items:
+            tid = it.get("item_type_id")
+            if not tid:
+                continue
 
-            grouped = defaultdict(list)
+            flag = int(it.get("flag") or 0)
+            group = slot_group_from_flag(flag, extended=True)
 
-            # build lines like: "Warp Disruptor II ×1"
-            for it in items:
-                tid = it.get("item_type_id")
-                if not tid:
-                    continue
+            name = type_names.get(int(tid)) or str(tid)
+            qd = int(it.get("quantity_destroyed") or 0)
+            qp = int(it.get("quantity_dropped") or 0)
+            qty = qd + qp
 
-                flag = int(it.get("flag") or 0)
-                group = _slot_group(flag)
+            grouped[group].append(f"{name} ×{qty}" if qty else name)
 
-                name = type_names.get(int(tid)) or str(tid)
-                qd = int(it.get("quantity_destroyed") or 0)
-                qp = int(it.get("quantity_dropped") or 0)
-                qty = qd + qp
+        for g in SLOT_GROUP_ORDER:
+            if grouped.get(g):
+                c.fitting_groups_preview.append((g, grouped[g]))
 
-                grouped[group].append(f"{name} ×{qty}" if qty else name)
-
-            # keep ordering consistent
-            order = [
-                "High Slots",
-                "Mid Slots",
-                "Low Slots",
-                "Rigs",
-                "Cargo",
-                "Drone Bay",
-                "Other",
-            ]
-            for g in order:
-                if grouped.get(g):
-                    c.fitting_groups_preview.append((g, grouped[g]))
-
-    # Build dropdown options (ALL + whatever your model defines)
     status_choices = ["PENDING", "APPROVED", "DENIED", "PAID"]
 
     context = {
@@ -329,7 +347,6 @@ def approve_claim(request, claim_id: int):
     comment = _get_comment(request)
 
     if claim.status == "APPROVED":
-        # Toggle off -> back to PENDING
         claim.set_status(
             "PENDING", reviewer=request.user, note=comment or "Approval removed."
         )
@@ -337,7 +354,6 @@ def approve_claim(request, claim_id: int):
         _add_review_record(claim, request.user, "Unapproved", comment)
         messages.success(request, f"Unapproved claim #{claim.id} (back to Pending).")
     else:
-        # Normal approve only from PENDING (but allow if someone wants to correct a DENIED)
         claim.set_status("APPROVED", reviewer=request.user, note=comment or "Approved.")
         claim.save()
         _add_review_record(claim, request.user, "Approved", comment)
@@ -356,7 +372,6 @@ def deny_claim(request, claim_id: int):
     comment = _get_comment(request)
 
     if claim.status == "DENIED":
-        # Toggle off -> back to PENDING
         claim.set_status(
             "PENDING", reviewer=request.user, note=comment or "Denial removed."
         )
@@ -384,7 +399,6 @@ def pay_claim(request, claim_id: int):
     comment = _get_comment(request)
 
     if claim.status == "PAID":
-        # Toggle off -> back to APPROVED
         claim.set_status(
             "APPROVED", reviewer=request.user, note=comment or "Payment mark removed."
         )
@@ -393,7 +407,6 @@ def pay_claim(request, claim_id: int):
         _add_review_record(claim, request.user, "Unpaid", comment)
         messages.success(request, f"Unpaid claim #{claim.id} (back to Approved).")
     else:
-        # Mark paid (only makes sense from APPROVED, but allow as correction)
         claim.set_status("PAID", reviewer=request.user, note=comment or "Paid.")
         claim.paid_at = timezone.now()
         claim.save()
@@ -405,6 +418,11 @@ def pay_claim(request, claim_id: int):
 
 def _require_reviewer(user) -> bool:
     return user.has_perm("srp.can_review_srp")
+
+
+# ---------------------------------------------------------------------------
+# Doctrine fits (reviewer tools)
+# ---------------------------------------------------------------------------
 
 
 @login_required
@@ -464,9 +482,9 @@ def doctrine_fit_detail(request, fit_id: int):
     fit = get_object_or_404(DoctrineFit.objects.prefetch_related("items"), id=fit_id)
 
     if request.method == "POST":
-        # Two actions supported here:
-        # 1) Edit name/active
-        # 2) Overwrite items by re-importing EFT text
+        # Two actions:
+        # 1) Overwrite items by re-importing EFT text
+        # 2) Edit name/active
         if request.POST.get("overwrite") == "1":
             eft_text = (request.POST.get("eft_text") or "").strip()
             if not eft_text:
@@ -483,7 +501,6 @@ def doctrine_fit_detail(request, fit_id: int):
                 else:
                     messages.success(request, "Fit overwritten from EFT.")
                     return redirect("srp:doctrine_fit_detail", fit_id=fit.id)
-
         else:
             form = DoctrineFitEditForm(request.POST, instance=fit)
             if form.is_valid():
@@ -498,11 +515,7 @@ def doctrine_fit_detail(request, fit_id: int):
     return render(
         request,
         "srp/admin/doctrine_fit_detail.html",
-        {
-            "fit": fit,
-            "form": form,
-            "items": fit.items.all(),
-        },
+        {"fit": fit, "form": form, "items": fit.items.all()},
     )
 
 
@@ -517,7 +530,7 @@ def fitcheck_rerun(request, claim_id: int):
         id=claim_id,
     )
 
-    from .fitcheck import compute_fitcheck  # local import avoids circular surprises
+    from .fitcheck import compute_fitcheck  # local import avoids circular imports
 
     result = compute_fitcheck(claim)
 
@@ -567,15 +580,20 @@ def doctrine_fit_delete(request, fit_id: int):
     return redirect("srp:doctrine_fit_list")
 
 
+# ---------------------------------------------------------------------------
+# Claim detail
+# ---------------------------------------------------------------------------
+
+
 @login_required
 def claim_detail(request, claim_id: int):
     """
     Claim detail page:
     - Reviewers (srp.can_review_srp) can view any claim
     - Regular users can view only their own claims
-    - Flag-only auto checks: NPC-only / NPC-present / Blue-involved
+    - Auto checks: NPC-only / NPC-present / Blue-involved
     - Fit check (cached, lazy)
-    - Submitter/Victim corp + alliance display
+    - Submitter/Victim corp + alliance display (best-effort)
     """
     claim = get_object_or_404(
         SRPClaim.objects.select_related(
@@ -592,28 +610,27 @@ def claim_detail(request, claim_id: int):
     if not is_reviewer and claim.submitter_id != request.user.id:
         return redirect("srp:my_claims")
 
-    # --- Fit check (lazy, cached)
+    # Fit check (lazy, cached)
     ensure_fitcheck_cached(claim)
 
-    # --- Review history
+    # Review history
     reviews = (
         ClaimReview.objects.select_related("reviewer")
         .filter(claim=claim)
         .order_by("-timestamp")
     )
 
-    # --- Killmail basics
+    # Killmail basics
     km = claim.killmail_raw or {}
-    victim = km.get("victim") or {}
-    items = victim.get("items") or []
+    victim_blob = km.get("victim") or {}
+    items = victim_blob.get("items") or []
     attackers = km.get("attackers") or []
 
-    # =========================================================
-    # Submitter / Victim corp + alliance (DISPLAY ONLY)
-    # =========================================================
-    from .esi import get_entity_names_cached
+    # ------------------------------------------------------------------
+    # Submitter / Victim corp + alliance (display only)
+    # ------------------------------------------------------------------
+    from .esi import get_entity_names_cached  # local import avoids cyclic surprises
 
-    # Submitter (from linked main character)
     submitter_char = None
     submitter_corp = None
     submitter_alliance = None
@@ -626,13 +643,12 @@ def claim_detail(request, claim_id: int):
         submitter_alliance = getattr(mc, "alliance_name", None)
         submitter_corp_id = getattr(mc, "corporation_id", None)
 
-    # Victim (from killmail)
     victim_char = claim.victim_character_name
     victim_corp = None
     victim_alliance = None
 
-    victim_corp_id = victim.get("corporation_id")
-    victim_alliance_id = victim.get("alliance_id")
+    victim_corp_id = victim_blob.get("corporation_id")
+    victim_alliance_id = victim_blob.get("alliance_id")
 
     if victim_corp_id:
         victim_corp = get_entity_names_cached(
@@ -644,9 +660,9 @@ def claim_detail(request, claim_id: int):
             "alliance", [victim_alliance_id], fetch_cap=1
         ).get(int(victim_alliance_id))
 
-    # =========================================================
+    # ------------------------------------------------------------------
     # Corp mismatch / Non-TNT flags
-    # =========================================================
+    # ------------------------------------------------------------------
     cfg = SRPConfig.get()
     self_alliance_ids = set(
         int(x) for x in (cfg.self_alliance_ids or []) if str(x).isdigit()
@@ -664,27 +680,13 @@ def claim_detail(request, claim_id: int):
         and int(victim_alliance_id) not in self_alliance_ids
     )
 
-    # =========================================================
+    # ------------------------------------------------------------------
     # Fitting grouping (slots, ammo filtered)
-    # =========================================================
-    def _slot_group(flag: int) -> str:
-        if 27 <= flag <= 34:
-            return "High Slots"
-        if 19 <= flag <= 26:
-            return "Mid Slots"
-        if 11 <= flag <= 18:
-            return "Low Slots"
-        if 92 <= flag <= 94:
-            return "Rigs"
-        if flag == 5:
-            return "Cargo"
-        if flag == 87:
-            return "Drone Bay"
-        return "Other"
-
+    # ------------------------------------------------------------------
     from collections import defaultdict
 
-    fittings_map = defaultdict(list)
+    fittings_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
     for it in items:
         flag = int(it.get("flag") or 0)
 
@@ -694,51 +696,55 @@ def claim_detail(request, claim_id: int):
 
         singleton = int(it.get("singleton") or 0)
 
-        # Filter ammo / charges / scripts
+        # Filter ammo / charges / scripts (multi-quantity non-singleton items).
         if qty_total > 1 and singleton == 0:
             continue
 
         it["qty_total"] = qty_total
-        fittings_map[_slot_group(flag)].append(it)
+        fittings_map[slot_group_from_flag(flag, extended=True)].append(it)
 
-    fitting_groups = []
-    for name in [
-        "High Slots",
-        "Mid Slots",
-        "Low Slots",
-        "Rigs",
-        "Cargo",
-        "Drone Bay",
-        "Other",
-    ]:
+    fitting_groups: list[tuple[str, list[dict[str, Any]]]] = []
+    for name in SLOT_GROUP_ORDER:
         if fittings_map.get(name):
             fitting_groups.append((name, fittings_map[name]))
 
-    # =========================================================
+    # ------------------------------------------------------------------
     # Type name resolution (items + fitcheck diff)
-    # =========================================================
-    item_type_ids = []
+    # ------------------------------------------------------------------
+    item_type_ids: list[int] = []
+    seen_types: set[int] = set()
+
     for it in items:
         tid = it.get("item_type_id")
-        if tid:
-            item_type_ids.append(int(tid))
+        if not tid:
+            continue
+        tid_i = int(tid)
+        if tid_i in seen_types:
+            continue
+        seen_types.add(tid_i)
+        item_type_ids.append(tid_i)
 
-    diff_type_ids = []
+    diff_type_ids: list[int] = []
     fc = claim.fitcheck_data or {}
-    diff = fc.get("diff") or {}
+    diff = (fc.get("diff") or {}) if isinstance(fc, dict) else {}
     for bucket in ("missing", "extra"):
         groups = diff.get(bucket) or {}
         for rows in groups.values():
             for r in rows or []:
                 tid = r.get("type_id")
                 if tid:
-                    diff_type_ids.append(int(tid))
+                    tid_i = int(tid)
+                    if tid_i not in seen_types:
+                        seen_types.add(tid_i)
+                        diff_type_ids.append(tid_i)
 
-    type_names = get_type_names_cached(item_type_ids + diff_type_ids, fetch_cap=120)
+    # Hard cap to keep requests bounded.
+    all_type_ids = (item_type_ids + diff_type_ids)[:120]
+    type_names = get_type_names_cached(all_type_ids, fetch_cap=120)
 
-    # =========================================================
+    # ------------------------------------------------------------------
     # NPC / Blue flags
-    # =========================================================
+    # ------------------------------------------------------------------
     npc_count = player_count = npc_damage = player_damage = 0
 
     blue_alliance_ids = set(
@@ -774,9 +780,9 @@ def claim_detail(request, claim_id: int):
     npc_only = player_count == 0 and npc_count > 0
     npc_present = npc_count > 0
 
-    # =========================================================
+    # ------------------------------------------------------------------
     # Reviewer edit form
-    # =========================================================
+    # ------------------------------------------------------------------
     edit_form = None
     if is_reviewer:
         if request.method == "POST" and request.POST.get("edit_claim") == "1":
@@ -802,7 +808,7 @@ def claim_detail(request, claim_id: int):
                 updated.edited_at = timezone.now()
                 updated.save()
 
-                changes = []
+                changes: list[str] = []
                 if old_category != updated.category:
                     changes.append(
                         f"category: {SRPClaim.category_label(old_category)} → {SRPClaim.category_label(updated.category)}"
@@ -822,9 +828,6 @@ def claim_detail(request, claim_id: int):
         else:
             edit_form = SRPClaimReviewerEditForm(instance=claim)
 
-    # =========================================================
-    # Render
-    # =========================================================
     return render(
         request,
         "srp/claim_detail.html",
@@ -867,10 +870,15 @@ def claim_detail(request, claim_id: int):
     )
 
 
+# ---------------------------------------------------------------------------
+# Admin overview + payouts bulk import
+# ---------------------------------------------------------------------------
+
+
 def _range_from_preset(preset: str):
     """
-    Returns (start_dt, end_dt_exclusive, label)
-    start inclusive, end exclusive.
+    Returns (start_dt, end_dt_exclusive, label).
+    Start is inclusive; end is exclusive.
     """
     tz = timezone.get_current_timezone()
     today = timezone.localdate()
@@ -909,7 +917,6 @@ def _range_from_preset(preset: str):
         end_d = date(today.year, 1, 1)
         label = "last year"
     else:
-        # fallback: last 7 days
         start_d = today - timedelta(days=6)
         end_d = today + timedelta(days=1)
         label = "last 7 days"
@@ -956,8 +963,6 @@ def admin_overview(request):
     - Paid breakdown toggles (category / submitter corp / reviewer)
     - Time presets + custom start/end (inclusive end date)
     """
-
-    # --- timeframe: custom overrides preset
     preset = request.GET.get("t", "this_week")
     start_str = request.GET.get("start")
     end_str = request.GET.get("end")
@@ -970,14 +975,14 @@ def admin_overview(request):
         start_dt, end_dt, time_label = _range_from_preset(preset)
         using_custom = False
 
-    # what to group paid by
     paid_by = (request.GET.get("paid_by") or "category").lower()
     if paid_by not in {"category", "corp", "reviewer"}:
         paid_by = "category"
 
-    qs = SRPClaim.objects.select_related("ship", "submitter", "reviewer")
+    qs = SRPClaim.objects.select_related(
+        "ship", "submitter", "submitter__main_character", "reviewer"
+    )
 
-    # --- STATUS SUMMARY (in window: submitted_at)
     recent = qs.filter(submitted_at__gte=start_dt, submitted_at__lt=end_dt)
 
     status_summary_qs = recent.values("status").annotate(
@@ -985,14 +990,12 @@ def admin_overview(request):
         isk=Coalesce(Sum("payout_amount"), Decimal("0")),
     )
 
-    # order: Paid / Approved / Pending / Denied
     status_order = {"PAID": 0, "APPROVED": 1, "PENDING": 2, "DENIED": 3}
     status_summary = sorted(
         list(status_summary_qs),
         key=lambda r: status_order.get(r["status"], 99),
     )
 
-    # --- QUEUE HEALTH (Pending overall)
     pending_qs = qs.filter(status="PENDING")
     oldest_pending = pending_qs.order_by("submitted_at").first()
 
@@ -1002,7 +1005,6 @@ def admin_overview(request):
 
     oldest_pending_list = pending_qs.order_by("submitted_at")[:10]
 
-    # --- REVIEWER ACTIVITY (window: review timestamp)
     reviewer_activity = (
         ClaimReview.objects.filter(timestamp__gte=start_dt, timestamp__lt=end_dt)
         .values("reviewer__username")
@@ -1010,11 +1012,10 @@ def admin_overview(request):
         .order_by("-actions", "-last_action")
     )
 
-    # --- PAID BREAKDOWN (window: paid_at)
     paid_qs = qs.filter(status="PAID", paid_at__gte=start_dt, paid_at__lt=end_dt)
 
     paid_title = "Paid breakdown"
-    paid_breakdown_rows = []
+    paid_breakdown_rows: list[dict[str, Any]] = []
 
     if paid_by == "category":
         paid_title = "Paid by SRP Category"
@@ -1044,9 +1045,10 @@ def admin_overview(request):
 
     elif paid_by == "corp":
         paid_title = "Paid by Submitter Corp"
-        # Best-effort in Python, using accounts.User.get_corp_name()
-        agg = {}  # corp -> {"count": int, "isk": Decimal}
-        for c in paid_qs.select_related("submitter").iterator():
+        agg: dict[str, dict[str, Any]] = {}
+        for c in paid_qs.select_related(
+            "submitter", "submitter__main_character"
+        ).iterator():
             submitter = c.submitter
             corp = submitter.get_corp_name() if submitter else "Unknown"
             corp = corp or "Unknown"
@@ -1063,25 +1065,21 @@ def admin_overview(request):
         paid_breakdown_rows.sort(key=lambda r: (r["isk"], r["count"]), reverse=True)
 
     context = {
-        # time controls
         "preset": preset,
         "using_custom": using_custom,
         "start": start_str or "",
         "end": end_str or "",
         "time_label": time_label,
-        # status + queue
         "status_summary": status_summary,
         "oldest_pending": oldest_pending,
         "oldest_pending_list": oldest_pending_list,
         "pending_7d": pending_7d,
         "pending_14d": pending_14d,
-        # reviewer + paid breakdown
         "reviewer_activity": reviewer_activity,
         "paid_by": paid_by,
         "paid_title": paid_title,
         "paid_breakdown": paid_breakdown_rows,
     }
-
     return render(request, "srp/admin/overview.html", context)
 
 
@@ -1095,7 +1093,6 @@ def admin_payouts(request):
         ships = ships.filter(ship_name__icontains=q)
 
     ships = ships.order_by("ship_name")[:500]
-
     return render(request, "srp/admin/payouts_list.html", {"ships": ships, "q": q})
 
 
@@ -1139,13 +1136,13 @@ def admin_payout_edit(request, ship_id: int):
 
 def _parse_bool(value) -> bool:
     """
+    Robust boolean parser for CSV inputs.
+
     Accepts:
-      1
-      "1"
-      "1 (anything...)"
-      "0 (anything...)"
-      "true", "yes", "y", "t"
-      ""
+      - 1 / "1" / "1 (anything...)"
+      - 0 / "0" / "0 (anything...)"
+      - "true", "yes", "y", "t"
+      - "" / None
     """
     if value is None:
         return False
@@ -1154,22 +1151,23 @@ def _parse_bool(value) -> bool:
     if not s:
         return False
 
-    # If there’s a leading 0/1 anywhere, use that
     m = re.search(r"\b([01])\b", s)
     if m:
         return m.group(1) == "1"
 
-    s_lower = s.lower()
-    return s_lower in {"true", "yes", "y", "t"}
+    return s.lower() in {"true", "yes", "y", "t"}
 
 
 def _parse_isk(value) -> Decimal:
     """
+    ISK parser for CSV inputs.
+
     Accepts:
-      200000000
-      "200,000,000"
-      "200,000,000 (325,787,715)"
-      "" / None
+      - 200000000
+      - "200,000,000"
+      - "200,000,000 (325,787,715)"
+      - "" / None
+
     Uses the first number chunk and ignores anything after (like parentheses).
     """
     if value is None:
@@ -1186,16 +1184,11 @@ def _parse_isk(value) -> Decimal:
     return Decimal(m.group(0).replace(",", ""))
 
 
-def _dec_to_str(d: Decimal | None) -> str:
-    # keep it simple for hidden fields
-    return str(d if d is not None else Decimal("0"))
-
-
 def _get_cell(row: dict, key: str):
-    # exact match first
+    """Fetch a cell from a CSV DictReader row with header normalization fallback."""
     if key in row:
         return row.get(key)
-    # fallback: strip whitespace from headers
+
     for k, v in row.items():
         if (k or "").strip().lower() == key.strip().lower():
             return v
@@ -1218,17 +1211,15 @@ def admin_payouts_bulk(request):
     except UnicodeDecodeError:
         raw = f.read().decode("latin-1")
 
-    # Store server-side so we don't POST it back
     job = PayoutImportJob.objects.create(
         created_by=request.user,
         csv_text=raw,
         original_filename=getattr(f, "name", "") or "",
     )
 
-    # Build preview using the same parsing logic, but from job.csv_text
     reader = csv.DictReader(io.StringIO(job.csv_text))
-    preview_rows = []
-    errors = []
+    preview_rows: list[dict[str, Any]] = []
+    errors: list[str] = []
 
     for i, row in enumerate(reader):
         ship_name = (row.get("Ship Name") or row.get("ship_name") or "").strip()
@@ -1241,7 +1232,7 @@ def admin_payouts_bulk(request):
         shitstack = _parse_isk(row.get("Shit Stack"))
         tnt_special = _parse_isk(row.get("TNT Special"))
         capital_flag = _parse_bool(_get_cell(row, "Capital"))
-        hull_contract = capital_flag or _parse_bool(row.get("HullContract"))
+        hull_contract = capital_flag or _parse_bool(_get_cell(row, "HullContract"))
 
         existing = ShipPayout.objects.filter(ship_name__iexact=ship_name).first()
         if not existing:
@@ -1261,9 +1252,9 @@ def admin_payouts_bulk(request):
             )
             continue
 
-        diffs = []
+        diffs: list[dict[str, Any]] = []
 
-        def _diff(field, old, new):
+        def _diff(field: str, old, new) -> None:
             if old != new:
                 diffs.append({"field": field, "old": old, "new": new})
 
@@ -1288,8 +1279,6 @@ def admin_payouts_bulk(request):
             }
         )
 
-    # Hide NO_CHANGE rows (since you asked not to display them),
-    # but keep counts so the page can explain "why nothing is showing".
     creates = sum(1 for r in preview_rows if r["action"] == "CREATE")
     updates = sum(1 for r in preview_rows if r["action"] == "UPDATE")
     nochange = sum(1 for r in preview_rows if r["action"] == "NO_CHANGE")
@@ -1360,7 +1349,6 @@ def admin_payouts_bulk_apply(request):
             else:
                 updated += 1
 
-    # Optional: clean up old jobs (or keep for audit)
     job.delete()
 
     messages.success(

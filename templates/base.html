@@ -96,13 +96,14 @@
         {% if user.is_authenticated %}
 
           <!-- SRP Menu (only shows what the user can access) -->
-          <li class="nav-item dropdown me-4 srp-menu">
-            <a class="nav-link dropdown-toggle"
+          <li class="nav-item dropdown m-2">
+            <a
+              class="btn btn-dark dropdown-toggle"
               href="#"
               role="button"
               data-bs-toggle="dropdown"
               aria-expanded="false">
-              🛡️ SRP
+              SRP
             </a>
 
             <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
@@ -139,6 +140,10 @@
             </ul>
           </li>
 
+          <li class="nav-item">
+            <a href="/admin/" class="btn btn-dark m-2">Admin Login</a>
+          </li>
+
           <li class="nav-item me-2">
             <span class="navbar-text text-light">
               Logged in as
@@ -153,10 +158,6 @@
           </li>
 
           <li class="nav-item">
-            <a class="nav-link" href="/admin/">Admin</a>
-          </li>
-
-          <li class="nav-item">
             <form action="/accounts/logout/" method="post" class="d-inline">
               {% csrf_token %}
               <button type="submit" class="btn btn-danger btn-sm ms-2">Logout</button>
@@ -164,11 +165,28 @@
           </li>
 
         {% else %}
-          <li class="nav-item">
-            <a class="nav-link" href="/accounts/login/">Login</a>
+          <li class="nav-item dropdown m-2">
+            <a
+              class="btn btn-dark dropdown-toggle"
+              href="#"
+              role="button"
+              data-bs-toggle="dropdown"
+              aria-expanded="false">
+              SRP
+            </a>
+            <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
+              <li>
+                <a class="dropdown-item" href="{% url 'srp:payout_table' %}">
+                  SRP Payout Table
+                </a>
+              </li>
+            </ul>
           </li>
           <li class="nav-item">
-            <a class="nav-link" href="/sso/login/">EVE SSO</a>
+            <a href="/sso/login/" class="btn btn-dark m-2">Log in with EVE</a>
+          </li>
+          <li class="nav-item">
+            <a href="/admin/" class="btn btn-dark m-2">Admin Login</a>
           </li>
         {% endif %}
 

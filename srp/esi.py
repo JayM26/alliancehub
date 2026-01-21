@@ -8,11 +8,29 @@ from typing import (
 )
 import requests  # pyright: ignore[reportMissingModuleSource]
 
+from django.conf import settings  # pyright: ignore[reportMissingModuleSource]
+
 from .models import EsiTypeCache, EsiEntityCache
 
 
-ESI_BASE = "https://esi.evetech.net/latest"
 UA = "AllianceHub-SRP/1.0"
+
+
+def _esi_base() -> str:
+    """
+    Base ESI URL (no trailing slash), environment-controlled via settings.EVE_ESI_URL.
+    """
+    base = (getattr(settings, "EVE_ESI_URL", "https://esi.evetech.net") or "").rstrip(
+        "/"
+    )
+    return f"{base}/latest"
+
+
+def _timeout() -> int:
+    """
+    Network timeout for ESI calls, environment-controlled via settings.EVE_HTTP_TIMEOUT.
+    """
+    return int(getattr(settings, "EVE_HTTP_TIMEOUT", 15) or 15)
 
 
 def parse_killmail_from_link(link: str) -> Optional[Tuple[int, str]]:
@@ -32,14 +50,23 @@ def parse_killmail_from_link(link: str) -> Optional[Tuple[int, str]]:
 
 
 def esi_get_json(path: str) -> dict:
-    # Always pin datasource; avoids surprises
-    url = f"{ESI_BASE}{path}"
+    """
+    Safe ESI GET helper.
+    Returns {} on failure instead of raising, to avoid breaking page loads.
+    """
+    base = _esi_base()
+    path = path.lstrip("/")
+    url = f"{base}/{path}"
     joiner = "&" if "?" in url else "?"
     url = f"{url}{joiner}datasource=tranquility"
 
-    r = requests.get(url, headers={"User-Agent": UA}, timeout=15)
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.get(url, headers={"User-Agent": UA}, timeout=15)
+        if r.status_code != 200:
+            return {}
+        return r.json() or {}
+    except requests.RequestException:
+        return {}
 
 
 def fetch_type_ids_by_names(type_names: list[str]) -> dict[str, int]:
@@ -51,15 +78,20 @@ def fetch_type_ids_by_names(type_names: list[str]) -> dict[str, int]:
     if not type_names:
         return {}
 
-    url = f"{ESI_BASE}/universe/ids/?datasource=tranquility"
-    r = requests.post(
-        url,
-        json=type_names,
-        headers={"User-Agent": UA},
-        timeout=15,
-    )
-    r.raise_for_status()
-    data = r.json() or {}
+    url = f"{_esi_base()}/universe/ids/?datasource=tranquility"
+
+    try:
+        r = requests.post(
+            url,
+            json=type_names,
+            headers={"User-Agent": UA},
+            timeout=_timeout(),
+        )
+        r.raise_for_status()
+        data = r.json() or {}
+    except (requests.RequestException, ValueError):
+        # Best-effort resolver: callers already treat failures as non-fatal.
+        return {}
 
     out: dict[str, int] = {}
     for row in data.get("inventory_types") or []:
