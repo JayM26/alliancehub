@@ -106,6 +106,11 @@ SECURE_SSL_REDIRECT = env_bool("SECURE_SSL_REDIRECT", False)
 SESSION_COOKIE_SECURE = env_bool("SESSION_COOKIE_SECURE", False)
 CSRF_COOKIE_SECURE = env_bool("CSRF_COOKIE_SECURE", False)
 
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_HTTPONLY = True
+CSRF_COOKIE_SAMESITE = "Lax"
+
 # HSTS tells browsers to prefer HTTPS for a period of time.
 # Start with a low value on test, then raise in production after validation.
 SECURE_HSTS_SECONDS = env_int("SECURE_HSTS_SECONDS", 0)

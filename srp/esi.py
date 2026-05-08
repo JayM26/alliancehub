@@ -42,7 +42,7 @@ def parse_killmail_from_link(link: str) -> Optional[Tuple[int, str]]:
     if not link:
         return None
 
-    m = re.search(r"/killmails/(\d+)/([0-9a-fA-F]+)", link)
+    m = re.search(r"/killmails/(\d+)/([0-9a-fA-F]{40})", link)
     if not m:
         return None
 
@@ -61,7 +61,7 @@ def esi_get_json(path: str) -> dict:
     url = f"{url}{joiner}datasource=tranquility"
 
     try:
-        r = requests.get(url, headers={"User-Agent": UA}, timeout=15)
+        r = requests.get(url, headers={"User-Agent": UA}, timeout=_timeout())
         if r.status_code != 200:
             return {}
         return r.json() or {}

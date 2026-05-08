@@ -19,6 +19,10 @@ from urllib.parse import urlencode
 
 import requests  # pyright: ignore[reportMissingModuleSource]
 from django.conf import settings  # pyright: ignore[reportMissingModuleSource]
+from django.db import (  # pyright: ignore[reportMissingModuleSource]
+    IntegrityError,
+    transaction,
+)
 from django.contrib.auth import (  # pyright: ignore[reportMissingModuleSource]
     get_user_model,
     login,
@@ -187,7 +191,7 @@ def eve_callback(request):
         return render(
             request,
             "eve_sso/error.html",
-            {"error": "Failed to get access token.", "details": token_resp.text},
+            {"error": "Failed to get access token."},
         )
 
     try:
@@ -197,10 +201,7 @@ def eve_callback(request):
         return render(
             request,
             "eve_sso/error.html",
-            {
-                "error": "Failed to get access token.",
-                "details": "Invalid JSON response.",
-            },
+            {"error": "Failed to get access token."},
         )
 
     access_token = tokens.get("access_token")
@@ -234,7 +235,7 @@ def eve_callback(request):
         return render(
             request,
             "eve_sso/error.html",
-            {"error": "Failed to verify character.", "details": verify_resp.text},
+            {"error": "Failed to verify character."},
         )
 
     try:
@@ -244,10 +245,7 @@ def eve_callback(request):
         return render(
             request,
             "eve_sso/error.html",
-            {
-                "error": "Failed to verify character.",
-                "details": "Invalid JSON response.",
-            },
+            {"error": "Failed to verify character."},
         )
 
     character_id = int(character_data["CharacterID"])
@@ -261,92 +259,88 @@ def eve_callback(request):
     corp_name = get_name("corporations", corp_id) if corp_id else None
     alliance_name = get_name("alliances", alliance_id) if alliance_id else None
 
-    existing_char = (
-        EveCharacter.objects.filter(character_id=character_id)
-        .select_related("user")
-        .first()
-    )
-
-    if existing_char:
-        # HARD GUARD: do not allow linking a character owned by another user
-        if existing_char.user and request.user.is_authenticated:
-            if existing_char.user_id != request.user.id:
-                logger.warning(
-                    "Attempt to link character %s owned by another user",
-                    character_id,
-                )
-                return render(
-                    request,
-                    "eve_sso/error.html",
-                    {
-                        "error": "This character is already linked to another account.",
-                        "details": "If you believe this is an error, contact an administrator.",
-                    },
-                )
-
-        # Safe to update tokens + metadata
-        existing_char.access_token = access_token
-        existing_char.refresh_token = refresh_token
-        existing_char.token_expiry = timezone.now() + timedelta(seconds=expires_in)
-        existing_char.corporation_id = corp_id
-        existing_char.corporation_name = corp_name
-        existing_char.alliance_id = alliance_id
-        existing_char.alliance_name = alliance_name
-        existing_char.save(
-            update_fields=[
-                "access_token",
-                "refresh_token",
-                "token_expiry",
-                "corporation_id",
-                "corporation_name",
-                "alliance_id",
-                "alliance_name",
-                "updated_at",
-            ]
-        )
-
-        login(request, existing_char.user)
-        attach_pending_character(sender=None, request=request, user=request.user)
-
-        return render(request, "eve_sso/success.html", {"character": character_name})
-
-    if request.user.is_authenticated or link_mode == "alt":
-        # If the user is already logged in, we always link as an alt to that account.
-        if request.user.is_authenticated:
-            target_user = request.user
-        else:
-            # Safety fallback: if someone somehow hits this with link_mode=alt but isn't logged in,
-            # treat it like a normal flow.
-            target_user = None
-
-        if target_user:
-            EveCharacter.objects.create(
-                user=target_user,
-                character_id=character_id,
-                character_name=character_name,
-                corporation_id=corp_id,
-                corporation_name=corp_name,
-                alliance_id=alliance_id,
-                alliance_name=alliance_name,
-                access_token=access_token,
-                refresh_token=refresh_token,
-                token_expiry=timezone.now() + timedelta(seconds=expires_in),
-            )
-            logger.info(
-                "Linked new alt %s to user %s", character_name, target_user.username
-            )
-            return redirect(settings.LOGIN_REDIRECT_URL or "/")
-
-    request.session["pending_character"] = {
-        "character_id": character_id,
+    token_expiry = timezone.now() + timedelta(seconds=expires_in)
+    char_defaults = {
         "character_name": character_name,
-        "corp_id": corp_id,
-        "corp_name": corp_name,
+        "corporation_id": corp_id,
+        "corporation_name": corp_name,
         "alliance_id": alliance_id,
         "alliance_name": alliance_name,
         "access_token": access_token,
         "refresh_token": refresh_token,
-        "expires_in": expires_in,
+        "token_expiry": token_expiry,
+    }
+
+    with transaction.atomic():
+        existing_char = (
+            EveCharacter.objects.select_for_update()
+            .filter(character_id=character_id)
+            .select_related("user")
+            .first()
+        )
+
+        if existing_char:
+            # HARD GUARD: do not allow linking a character owned by another user
+            if existing_char.user and request.user.is_authenticated:
+                if existing_char.user_id != request.user.id:
+                    logger.warning(
+                        "Attempt to link character %s owned by another user",
+                        character_id,
+                    )
+                    return render(
+                        request,
+                        "eve_sso/error.html",
+                        {"error": "This character is already linked to another account. Contact an administrator if you believe this is an error."},
+                    )
+
+            for field, value in char_defaults.items():
+                setattr(existing_char, field, value)
+            existing_char.save(update_fields=[*char_defaults.keys(), "updated_at"])
+
+            login(request, existing_char.user)
+            attach_pending_character(sender=None, request=request, user=request.user)
+
+            return render(request, "eve_sso/success.html", {"character": character_name})
+
+        if request.user.is_authenticated or link_mode == "alt":
+            target_user = request.user if request.user.is_authenticated else None
+
+            if target_user:
+                try:
+                    EveCharacter.objects.create(
+                        user=target_user,
+                        character_id=character_id,
+                        **char_defaults,
+                    )
+                except IntegrityError:
+                    return render(
+                        request,
+                        "eve_sso/error.html",
+                        {"error": "This character was just linked by another session. Please try again."},
+                    )
+                logger.info(
+                    "Linked new alt %s to user %s", character_name, target_user.username
+                )
+                return redirect(settings.LOGIN_REDIRECT_URL or "/")
+
+    # Persist character immediately (user=None until account type is chosen).
+    # Tokens never transit through the session.
+    try:
+        pending_char = EveCharacter.objects.create(
+            user=None,
+            character_id=character_id,
+            **char_defaults,
+        )
+    except IntegrityError:
+        return render(
+            request,
+            "eve_sso/error.html",
+            {"error": "This character was just linked by another session. Please try again."},
+        )
+
+    request.session["pending_character"] = {
+        "character_id": character_id,
+        "character_name": character_name,
     }
     return redirect(reverse("choose_account_type"))
 
@@ -374,9 +368,8 @@ def character_info(request, character_id):
     try:
         char = ensure_valid_access_token(char)
     except RuntimeError as e:
-        return JsonResponse(
-            {"error": "Token refresh failed", "details": str(e)}, status=401
-        )
+        logger.warning("Token refresh failed for character %s: %s", character_id, e)
+        return JsonResponse({"error": "Token refresh failed"}, status=401)
 
     headers = {"Authorization": f"Bearer {char.access_token}"}
     esi_url = f"{settings.EVE_ESI_URL.rstrip('/')}/latest/characters/{int(char.character_id)}/"
@@ -384,15 +377,12 @@ def character_info(request, character_id):
     try:
         esi_resp = http_get(esi_url, headers=headers)
     except requests.RequestException as e:
-        return JsonResponse(
-            {"error": "Failed to fetch ESI data", "details": str(e)}, status=502
-        )
+        logger.warning("ESI fetch failed for character %s: %s", character_id, e)
+        return JsonResponse({"error": "Failed to fetch ESI data"}, status=502)
 
     if esi_resp.status_code != 200:
-        return JsonResponse(
-            {"error": "Failed to fetch ESI data", "details": esi_resp.text},
-            status=esi_resp.status_code,
-        )
+        logger.warning("ESI returned %s for character %s", esi_resp.status_code, character_id)
+        return JsonResponse({"error": "Failed to fetch ESI data"}, status=esi_resp.status_code)
 
     return JsonResponse(esi_resp.json())
 
@@ -403,35 +393,31 @@ def choose_account_type(request):
     - create a new main account, or
     - begin an alt-link flow (user will log in with an existing main next).
     """
-    pending_char = request.session.get("pending_character")
+    pending_meta = request.session.get("pending_character")
+    if not pending_meta:
+        return redirect("eve_login")
+
+    pending_char = EveCharacter.objects.filter(
+        character_id=pending_meta["character_id"], user__isnull=True
+    ).first()
     if not pending_char:
+        request.session.pop("pending_character", None)
         return redirect("eve_login")
 
     if request.method == "POST":
         choice = request.POST.get("account_type")
 
         if choice == "main":
-            safe_username = slugify(pending_char["character_name"])
+            safe_username = slugify(pending_char.character_name)
             if User.objects.filter(username=safe_username).exists():
-                safe_username = f"{safe_username}-{pending_char['character_id']}"
+                safe_username = f"{safe_username}-{pending_char.character_id}"
 
             new_user = User.objects.create_user(username=safe_username, password=None)
 
-            new_char = EveCharacter.objects.create(
-                user=new_user,
-                character_id=pending_char["character_id"],
-                character_name=pending_char["character_name"],
-                corporation_id=pending_char["corp_id"],
-                corporation_name=pending_char["corp_name"],
-                alliance_id=pending_char["alliance_id"],
-                alliance_name=pending_char["alliance_name"],
-                access_token=pending_char["access_token"],
-                refresh_token=pending_char["refresh_token"],
-                token_expiry=timezone.now()
-                + timedelta(seconds=int(pending_char["expires_in"])),
-            )
+            pending_char.user = new_user
+            pending_char.save(update_fields=["user", "updated_at"])
 
-            new_user.main_character = new_char
+            new_user.main_character = pending_char
             new_user.save(update_fields=["main_character"])
 
             login(request, new_user)
@@ -446,5 +432,5 @@ def choose_account_type(request):
     return render(
         request,
         "eve_sso/choose_account_type.html",
-        {"character": pending_char},
+        {"character": {"character_name": pending_char.character_name, "character_id": pending_char.character_id}},
     )

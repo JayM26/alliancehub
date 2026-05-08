@@ -140,9 +140,11 @@
             </ul>
           </li>
 
+          {% if user.is_staff %}
           <li class="nav-item">
-            <a href="/admin/" class="btn btn-dark m-2">Admin Login</a>
+            <a href="/admin/" class="btn btn-dark m-2">Admin</a>
           </li>
+          {% endif %}
 
           <li class="nav-item me-2">
             <span class="navbar-text text-light">
@@ -184,9 +186,6 @@
           </li>
           <li class="nav-item">
             <a href="/sso/login/" class="btn btn-dark m-2">Log in with EVE</a>
-          </li>
-          <li class="nav-item">
-            <a href="/admin/" class="btn btn-dark m-2">Admin Login</a>
           </li>
         {% endif %}
 

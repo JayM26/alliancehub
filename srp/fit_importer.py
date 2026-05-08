@@ -59,7 +59,10 @@ def parse_eft_text(eft_text: str) -> ParsedFit:
             break
         raise ValueError("EFT header not found. Expected a line like: [Ship, Fit Name]")
 
-    body_lines = lines[header_idx + 1 :]  # type: ignore[arg-type]
+    if header_idx is None:
+        raise ValueError("EFT header not found. Expected a line like: [Ship, Fit Name]")
+
+    body_lines = lines[header_idx + 1 :]
     blocks = _split_blocks(body_lines)
 
     # EFT convention: first four meaningful blocks are Low, Mid, High, Rigs

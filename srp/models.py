@@ -157,6 +157,7 @@ class SRPClaim(models.Model):
         decimal_places=2,
         blank=True,
         null=True,
+        validators=[MinValueValidator(0)],
     )
 
     # -------------------------
@@ -271,14 +272,28 @@ class SRPClaim(models.Model):
             return 0
         return self.ship.payout_for_category(cat) or 0
 
+    VALID_TRANSITIONS = {
+        "PENDING": {"APPROVED", "DENIED"},
+        "APPROVED": {"PAID", "PENDING"},
+        "DENIED": {"PENDING"},
+        "PAID": set(),
+    }
+
     def set_status(self, new_status: str, reviewer=None, note: str = ""):
         ns = (new_status or "").strip().upper()
+        current = (self.status or "").strip().upper()
+
+        allowed = self.VALID_TRANSITIONS.get(current)
+        if allowed is not None and ns not in allowed:
+            raise ValueError(
+                f"Invalid status transition: {current} → {ns}"
+            )
+
         self.status = ns
 
         if reviewer:
             self.reviewer = reviewer
 
-        # processed_at is only for approve/deny/paid; cleared when returning to pending
         if ns in {self.Status.APPROVED, self.Status.DENIED, self.Status.PAID}:
             self.processed_at = timezone.now()
         elif ns == self.Status.PENDING:
@@ -308,6 +323,13 @@ class SRPClaim(models.Model):
             models.Index(fields=["status", "category"]),
             models.Index(fields=["submitted_at"]),
             models.Index(fields=["character_name"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["killmail_id", "killmail_hash"],
+                name="unique_killmail",
+                condition=models.Q(killmail_id__isnull=False),
+            ),
         ]
         ordering = ["-submitted_at"]
         permissions = [
