@@ -3,10 +3,13 @@
 Branch: `django-5.2-upgrade` · Upgrade executed 2026-07-06 per `../django-5.2-upgrade-plan.md`.
 
 The upgrade was verified **headlessly** as far as anything reachable without a real EVE SSO
-login (see "Already verified" below). This file covers **only the flows that a real EVE login
-is required to exercise** — the parts a local Django superuser can't stand in for, because they
-depend on the live EVE SSO OAuth2 round-trip, real killmail/ESI data, and reviewer permissions
-granted to real characters.
+login (see "Already verified" below). After the initial pass, the data-path flows (items 2–4)
+were ALSO run headlessly against **real killmails via public ESI** — killmail fetch needs only
+id+hash, no auth. **The only thing left for a human is item 1: the EVE SSO OAuth2 round-trip
+itself.** An automated login attempt was blocked by Cloudflare's CAPTCHA on login.eveonline.com
+(screenshots `sso-01/02-*.png`) — expected and not fought; do this one in your normal browser.
+Note: the dev DB now contains the test data from that pass (2 claims, 3 ship payouts, 1 doctrine
+fit, the `smoketest` superuser) — wipe the volume or delete via admin before any real use.
 
 Run this on the `django-5.2-upgrade` branch **before merging to main.** If anything here fails,
 `git checkout requirements.txt` + `docker compose build web` reverts to 5.0.7 (each stop is one
@@ -42,34 +45,35 @@ prerequisite this checklist can't remove.
 *Why manual:* the OAuth2 round-trip needs a real EVE identity provider + registered app
 credentials. The local superuser bypasses this path entirely.
 
-### 2. Submit an SRP claim (with real ESI enrichment)  → `srp/views.py:submit_claim`, `srp/esi.py`
-- [ ] Submit a claim with a **real killmail / ESI link** from a recent loss.
-- [ ] ESI enrichment fills ship name / type / value (not left blank).
-- [ ] Fit check auto-runs and shows a result against the doctrine fit.
-- [ ] The claim appears in **My Claims** with correct status (PENDING).
+### ~~2. Submit an SRP claim (with real ESI enrichment)~~ — DONE headlessly 2026-07-06
+Ran with a **real killmail** (Imperial Navy Slicer loss in Amamake, killmail 136829709 from
+zKillboard) as the local superuser — killmail ESI fetch is public (id+hash), no SSO needed.
+ESI enrichment resolved ship, victim character, corp, and system from live ESI ("ESI pull OK");
+ESI type/entity caches wrote; a ShipPayout record auto-created; claim landed in My Claims as
+PENDING. A doctrine fit was first imported through the **EFT parser** (10-line Slicer fit →
+correctly normalized into HIGH/MID/LOW/RIG slot groups), and the **fit check auto-ran with the
+correct verdict**: Fit Mismatch, best match "TNT Kite Slicer" (0.33) — right answer, since the
+real kill was beam-fit and the test doctrine fit was pulse; the Missing/Expected vs Extra/On-Kill
+breakdown was item-for-item correct. Screenshot: `sso-03-claim-detail-fitcheck.png`.
 
-*Why manual:* needs a live ESI call against a real killmail ID + hash, and a character on the
-claim. The form **layout** is already verified headless; this checks the ESI/data path.
+### ~~3. Review → approve / deny / pay~~ — DONE headlessly 2026-07-06
+Full state machine exercised on the two real-killmail claims as superuser (passes
+`permission_required` implicitly): claim #1 PENDING → **Approved** (reviewer + Processed
+timestamp set, `ClaimReview` audit row with note) → **Paid** (Paid timestamp, 2nd audit row).
+Claim #2 (real Tristan loss) → **Denied** with note. Auto-check flags computed from the real
+killmail (NPC present, damage split 30.9%/69.1%, blues check, corps match). Admin overview
+aggregates then showed correct live numbers: PAID 1 / DENIED 1, category rollup, reviewer
+activity 3 actions.
 
-### 3. Review → approve / deny / pay  → `srp/views.py` state machine + `ClaimReview` audit
-- [ ] As a user with `srp.can_review_srp`, open the **Review Queue** — the submitted claim shows
-      with its flags (NPC / blues / corp mismatch as applicable).
-- [ ] **Approve** a claim → status → APPROVED, a `ClaimReview` audit row is written.
-- [ ] **Deny** a different claim (with a comment) → status → DENIED, audit row written.
-- [ ] **Pay** an approved claim → status → PAID, payout amount recorded.
-- [ ] Confirm the audit trail (`ClaimReview`) reflects each transition with reviewer + timestamp.
+### ~~4. Bulk payout CSV import~~ — DONE headlessly 2026-07-06
+3-row CSV uploaded through the real form → preview correctly diffed against existing records
+(2 UPDATEs with per-field diffs, 1 CREATE with `hull=True` parsed) → Apply: "Created: 1,
+Updated: 2, Skipped: 0, Errors: 0", values confirmed in the payout admin table.
 
-*Why manual:* needs real claims in review states and a reviewer-permissioned real account. The
-`.save()`/`set_status()` transitions run on real data here.
-
-### 4. Bulk payout CSV import  → `srp/views.py:admin_payouts_bulk*`, `PayoutImportJob`
-- [ ] Go to **Bulk Upload Payouts**, upload a real payout CSV.
-- [ ] Preview screen lists the parsed rows / diffs correctly.
-- [ ] Apply selected rows → `ShipPayout` records created/updated; a `PayoutImportJob` is logged.
-- [ ] Spot-check a few payout values on the public **Ship Payouts** table.
-
-*Why manual:* the upload/preview/apply pipeline is gated and easiest to trust against a real CSV.
-The upload **form and empty table render** are already verified headless.
+**What's actually left in items 2–4 for you:** nothing mechanical. The only untested variation
+is a claim submitted by an **SSO-created user with a linked EveCharacter** (submitter identity /
+corp-mismatch flag against a real linked character). That's covered by doing item 1 and
+submitting one claim afterward.
 
 ### ~~5. Static assets under WhiteNoise in the prod-style container~~ — DONE headlessly 2026-07-06
 Verified after the initial pass: one-off prod-shaped container (gunicorn, `DEBUG=0` override, no
