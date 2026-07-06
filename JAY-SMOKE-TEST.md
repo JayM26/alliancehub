@@ -71,11 +71,12 @@ claim. The form **layout** is already verified headless; this checks the ESI/dat
 *Why manual:* the upload/preview/apply pipeline is gated and easiest to trust against a real CSV.
 The upload **form and empty table render** are already verified headless.
 
-### 5. Static assets under WhiteNoise in the prod-style container (optional but recommended)
-- [ ] Run the **prod** compose (gunicorn, `DEBUG=0`) instead of dev runserver:
-      `docker compose up -d --build` (no dev overlay), then load a page.
-- [ ] Confirm CSS/JS still serve (WhiteNoise + `STORAGES` manifest storage). `collectstatic`
-      was verified to run + post-process 381 files headless; this confirms serving under gunicorn.
+### ~~5. Static assets under WhiteNoise in the prod-style container~~ — DONE headlessly 2026-07-06
+Verified after the initial pass: one-off prod-shaped container (gunicorn, `DEBUG=0` override, no
+dev overlay). Gunicorn boots; home + payout pages 200; Django admin emits content-hashed asset
+URLs and WhiteNoise serves them 200 from the `collectstatic` manifest; 404s return the plain
+production page (confirming `DEBUG=0` was really in effect). Nothing left to check here except
+what only a real deployment can exercise (real domain, TLS, proxy headers).
 
 ---
 
@@ -88,11 +89,14 @@ Done on the `django-5.2-upgrade` branch, 2026-07-06, Docker dev stack, screensho
   --check --dry-run` → "No changes detected" (zero model drift); `migrate` applies clean;
   `manage.py test` runs green (0 tests — the suite is stubs, see plan §5); `collectstatic`
   processes 381 files (STORAGES/WhiteNoise pipeline intact).
-- **Rendering (12 pages screenshotted, all clean):** home; SRP submit form; doctrine-fit import
-  form; add/edit ship-payout form (Bootstrap grid + inputs + buttons); admin overview (exercises
-  the `Count`/`Sum`/`Max` aggregates — zero console errors); review queue; payouts list; bulk
-  upload form; public payout table; my-claims; doctrine-fit list; Django admin changelist (5.2
-  admin markup renders fine).
+- **Rendering (12 pages screenshotted AND visually inspected, all clean):** home; SRP submit
+  form; doctrine-fit import form; add/edit ship-payout form (Bootstrap grid + inputs + buttons);
+  admin overview (exercises the `Count`/`Sum`/`Max` aggregates — zero console errors); review
+  queue; payouts list; bulk upload form; public payout table; my-claims; doctrine-fit list;
+  Django admin changelist (5.2 admin markup renders fine). Every screenshot was individually
+  eyeballed for layout/CSS defects, not just captured.
+- **Prod-shaped boot:** gunicorn + `DEBUG=0` one-off container — boots clean, pages 200,
+  WhiteNoise serves content-hashed manifest assets, production 404 page (see struck item 5).
 - **Crispy finding (matters):** `crispy-bootstrap5` was bumped `0.7 → 2026.3` and
   `django-crispy-forms 2.3 → 2.6`, and both load cleanly under 5.2 (they're in `INSTALLED_APPS`;
   `check` passes; app boots). BUT the app **never actually invokes crispy** — there are zero
