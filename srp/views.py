@@ -358,6 +358,12 @@ def approve_claim(request, claim_id: int):
         claim.save()
         _add_review_record(claim, request.user, "Approved", comment)
         messages.success(request, f"Approved claim #{claim.id}.")
+        if claim.needs_manual_payout:
+            messages.warning(
+                request,
+                f"⚠ Claim #{claim.id} has no configured payout (0 ISK) — set a "
+                f"Manual amount or configure the ship payout before paying.",
+            )
 
     return redirect(request.META.get("HTTP_REFERER", "srp:review_queue"))
 
@@ -407,6 +413,12 @@ def pay_claim(request, claim_id: int):
         _add_review_record(claim, request.user, "Unpaid", comment)
         messages.success(request, f"Unpaid claim #{claim.id} (back to Approved).")
     else:
+        if claim.needs_manual_payout:
+            messages.warning(
+                request,
+                f"⚠ Claim #{claim.id} has no configured payout (0 ISK) — set a "
+                f"Manual amount or configure the ship payout before paying.",
+            )
         claim.set_status("PAID", reviewer=request.user, note=comment or "Paid.")
         claim.paid_at = timezone.now()
         claim.save()
@@ -835,6 +847,7 @@ def claim_detail(request, claim_id: int):
             "claim": claim,
             "reviews": reviews,
             "is_reviewer": is_reviewer,
+            "needs_manual_payout": claim.needs_manual_payout,
             # Parties
             "submitter_char": submitter_char,
             "submitter_corp": submitter_corp,

@@ -272,11 +272,26 @@ class SRPClaim(models.Model):
             return 0
         return self.ship.payout_for_category(cat) or 0
 
+    @property
+    def needs_manual_payout(self) -> bool:
+        """
+        True when this claim computed to a 0 payout that a human should look at:
+        not Manual (reviewer sets those by hand), not Denied (0 is fine there),
+        and calculate_payout() evaluates to 0 — i.e. no ship linked, the ship
+        row is missing, or the category's ShipPayout column is unconfigured (0).
+        Distinguishes "unfunded / probably unconfigured" from a legit 0.
+        """
+        if self.canonical_category(self.category) == self.Category.MANUAL:
+            return False
+        if (self.status or "").strip().upper() == self.Status.DENIED:
+            return False
+        return self.calculate_payout() == 0
+
     VALID_TRANSITIONS = {
         "PENDING": {"APPROVED", "DENIED"},
-        "APPROVED": {"PAID", "PENDING"},
+        "APPROVED": {"PAID", "PENDING", "DENIED"},
         "DENIED": {"PENDING"},
-        "PAID": set(),
+        "PAID": {"APPROVED"},
     }
 
     def set_status(self, new_status: str, reviewer=None, note: str = ""):
@@ -288,6 +303,20 @@ class SRPClaim(models.Model):
             raise ValueError(
                 f"Invalid status transition: {current} → {ns}"
             )
+
+        # Freeze semantics: snapshot the payout at the moment of approval so the
+        # recorded value is the ShipPayout value *now*, not a possibly-stale
+        # earlier value — and so save() (which only recomputes while PENDING)
+        # then preserves it for the life of the claim. Only the genuine approval
+        # (PENDING → APPROVED) snapshots; un-pay (PAID → APPROVED) must NOT
+        # recompute — the frozen value carries through. Manual is reviewer-entered
+        # and never auto-touched.
+        if (
+            ns == self.Status.APPROVED
+            and current == self.Status.PENDING
+            and self.canonical_category(self.category) != self.Category.MANUAL
+        ):
+            self.payout_amount = self.calculate_payout()
 
         self.status = ns
 
@@ -309,8 +338,16 @@ class SRPClaim(models.Model):
 
         cfg = SRPConfig.get()
 
-        # Payout policy: always derived unless Manual
-        if cfg.auto_calculate_payouts and self.category != self.Category.MANUAL:
+        # Payout policy: a live "provisional" preview is recomputed ONLY while the
+        # claim is still PENDING (and not Manual). Once APPROVED/DENIED/PAID the
+        # payout_amount is FROZEN — save() must never overwrite the recorded value,
+        # even if the ShipPayout master table changes underneath it. The value is
+        # snapshot fresh at approval time in set_status(). Manual is always excluded.
+        if (
+            cfg.auto_calculate_payouts
+            and self.category != self.Category.MANUAL
+            and self.status == self.Status.PENDING
+        ):
             self.payout_amount = self.calculate_payout()
 
         super().save(*args, **kwargs)

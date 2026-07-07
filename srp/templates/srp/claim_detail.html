@@ -109,6 +109,9 @@
               {% else %}
                 —
               {% endif %}
+              {% if needs_manual_payout %}
+                <span class="badge text-bg-warning">No payout set</span>
+              {% endif %}
             </div>
           </div>
 
