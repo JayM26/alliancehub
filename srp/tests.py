@@ -18,6 +18,7 @@ from django.contrib.auth import get_user_model  # pyright: ignore[reportMissingM
 from django.test import TestCase  # pyright: ignore[reportMissingModuleSource]
 from django.utils import timezone  # pyright: ignore[reportMissingModuleSource]
 
+from .checks import CheckResult, blue_check, corp_mismatch_check, non_tnt_check
 from .models import ShipPayout, SRPClaim, SRPConfig
 
 User = get_user_model()
@@ -179,3 +180,120 @@ class SRPPayoutRulesTests(TestCase):
         claim = self._claim(status="PENDING")
         with self.assertRaises(ValueError):
             claim.set_status("PAID", reviewer=self.user)
+
+
+# ---------------------------------------------------------------------------
+# A1 — Auto-checks: "unconfigured" must render NEUTRAL, never false-green.
+# ---------------------------------------------------------------------------
+class SRPAutoCheckTests(TestCase):
+    """
+    Cluster A applied to the reviewer auto-checks. Each check is tri-state:
+    WARN / CLEAN / neutral (NA). An empty SRPConfig must yield NA (neutral),
+    NOT a green "clean" that a reviewer misreads as "checked & safe".
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="pilot", password="x")
+
+    def _claim(self, km):
+        return SRPClaim.objects.create(
+            submitter=self.user,
+            character_name="Pilot",
+            category="STRATEGIC",
+            status="PENDING",
+            esi_link="https://esi.evetech.net/latest/killmails/1/abc/",
+            killmail_raw=km,
+        )
+
+    def _cfg(self, **cols):
+        cfg = SRPConfig.get()
+        for k, v in cols.items():
+            setattr(cfg, k, v)
+        cfg.save()
+        return cfg
+
+    def _link_main(self, corp_id):
+        from eve_sso.models import EveCharacter
+
+        ch = EveCharacter.objects.create(
+            user=self.user,
+            character_id=corp_id * 10 + 1,
+            character_name="Main",
+            corporation_id=corp_id,
+        )
+        self.user.main_character = ch
+        self.user.save()
+        # Reload so main_character is attached fresh.
+        return SRPClaim.objects.select_related(
+            "submitter", "submitter__main_character"
+        )
+
+    # -- Blue check ------------------------------------------------------
+    def test_blue_unconfigured_is_neutral_not_green(self):
+        cfg = self._cfg(blue_alliance_ids=[], blue_corp_ids=[])
+        claim = self._claim(
+            {"attackers": [{"character_id": 5, "alliance_id": 111}], "victim": {}}
+        )
+        res = blue_check(claim, cfg)
+        self.assertEqual(res.state, CheckResult.NA)
+        self.assertEqual(res.badge_class, "secondary")  # NOT success/green
+        self.assertIn("not configured", res.label.lower())
+
+    def test_blue_configured_and_clean_is_green(self):
+        cfg = self._cfg(blue_alliance_ids=[999])
+        claim = self._claim(
+            {"attackers": [{"character_id": 5, "alliance_id": 111}], "victim": {}}
+        )
+        res = blue_check(claim, cfg)
+        self.assertEqual(res.state, CheckResult.CLEAN)
+        self.assertEqual(res.badge_class, "success")
+
+    def test_blue_configured_and_hit_is_warn(self):
+        cfg = self._cfg(blue_alliance_ids=[111])
+        claim = self._claim(
+            {"attackers": [{"character_id": 5, "alliance_id": 111}], "victim": {}}
+        )
+        res = blue_check(claim, cfg)
+        self.assertEqual(res.state, CheckResult.WARN)
+
+    # -- Non-TNT check ---------------------------------------------------
+    def test_non_tnt_unconfigured_is_neutral_not_green(self):
+        cfg = self._cfg(self_alliance_ids=[])
+        claim = self._claim({"attackers": [], "victim": {"alliance_id": 222}})
+        res = non_tnt_check(claim, cfg)
+        self.assertEqual(res.state, CheckResult.NA)
+        self.assertEqual(res.badge_class, "secondary")
+
+    def test_non_tnt_configured_victim_outside_is_warn(self):
+        cfg = self._cfg(self_alliance_ids=[100])
+        claim = self._claim({"attackers": [], "victim": {"alliance_id": 222}})
+        res = non_tnt_check(claim, cfg)
+        self.assertEqual(res.state, CheckResult.WARN)
+
+    def test_non_tnt_configured_victim_inside_is_green(self):
+        cfg = self._cfg(self_alliance_ids=[222])
+        claim = self._claim({"attackers": [], "victim": {"alliance_id": 222}})
+        res = non_tnt_check(claim, cfg)
+        self.assertEqual(res.state, CheckResult.CLEAN)
+
+    # -- Corp mismatch check --------------------------------------------
+    def test_corp_uncomputable_is_neutral_not_green(self):
+        # No linked main character -> submitter corp unknown -> NA.
+        claim = self._claim({"attackers": [], "victim": {"corporation_id": 500}})
+        res = corp_mismatch_check(claim)
+        self.assertEqual(res.state, CheckResult.NA)
+        self.assertEqual(res.badge_class, "secondary")
+
+    def test_corp_mismatch_is_warn(self):
+        qs = self._link_main(corp_id=500)
+        claim = self._claim({"attackers": [], "victim": {"corporation_id": 999}})
+        claim = qs.get(id=claim.id)
+        res = corp_mismatch_check(claim)
+        self.assertEqual(res.state, CheckResult.WARN)
+
+    def test_corp_match_is_green(self):
+        qs = self._link_main(corp_id=500)
+        claim = self._claim({"attackers": [], "victim": {"corporation_id": 500}})
+        claim = qs.get(id=claim.id)
+        res = corp_mismatch_check(claim)
+        self.assertEqual(res.state, CheckResult.CLEAN)

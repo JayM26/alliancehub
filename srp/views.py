@@ -43,6 +43,7 @@ from django.views.decorators.http import (  # pyright: ignore[reportMissingModul
     require_POST,
 )
 
+from .checks import claim_auto_checks
 from .esi import fetch_type_name, get_type_names_cached, populate_claim_from_esi
 from .fit_importer import import_eft_fit
 from .fitcheck import ensure_fitcheck_cached
@@ -174,9 +175,8 @@ def review_queue(request):
 
     For template convenience, this view attaches computed attributes to each claim:
     - flag_npc: bool (any NPC attacker present)
-    - flag_blue: bool (any blue corp/alliance attacker present)
-    - flag_corp_mismatch: bool (submitter corp != victim corp)
-    - flag_non_tnt: bool (victim alliance not in configured self alliance list)
+    - check_blue / check_corp / check_non_tnt: CheckResult tri-states
+      (WARN / CLEAN / neutral-when-unconfigured) — see srp.checks.
     - fitting_item_count: int
     - fitting_groups_preview: list[tuple[group_name, list[str]]]
     """
@@ -206,64 +206,26 @@ def review_queue(request):
     claims = qs.select_related("fitcheck_best_fit").order_by("submitted_at")
 
     cfg = SRPConfig.get()
-    blue_alliance_ids = set(
-        int(x) for x in (cfg.blue_alliance_ids or []) if str(x).isdigit()
-    )
-    blue_corp_ids = set(int(x) for x in (cfg.blue_corp_ids or []) if str(x).isdigit())
-    self_alliance_ids = set(
-        int(x) for x in (cfg.self_alliance_ids or []) if str(x).isdigit()
-    )
 
     from collections import defaultdict
 
     for c in claims:
         km = c.killmail_raw or {}
         attackers = km.get("attackers") or []
-
-        npc_present = False
-        blue_involved = False
-
         victim_blob = km.get("victim") or {}
-        victim_corp_id = victim_blob.get("corporation_id")
-        victim_alliance_id = victim_blob.get("alliance_id")
 
-        # Submitter corp id (from linked main_character if present).
-        submitter_corp_id = None
-        mc = getattr(c.submitter, "main_character", None)
-        if mc:
-            submitter_corp_id = getattr(mc, "corporation_id", None)
+        # Tri-state auto-checks (blue / corp mismatch / non-TNT). Each is a
+        # CheckResult so the template can render an unconfigured/uncomputable
+        # check as a NEUTRAL badge instead of a false-green or a silent pass.
+        checks = claim_auto_checks(c, cfg)
+        c.check_blue = checks["blue"]
+        c.check_corp = checks["corp"]
+        c.check_non_tnt = checks["non_tnt"]
 
-        c.flag_corp_mismatch = (
-            bool(victim_corp_id)
-            and bool(submitter_corp_id)
-            and int(victim_corp_id) != int(submitter_corp_id)
-        )
-
-        # Non-TNT: only evaluate if we know our own alliance id(s) AND victim has an alliance id.
-        c.flag_non_tnt = (
-            bool(self_alliance_ids)
-            and bool(victim_alliance_id)
-            and int(victim_alliance_id) not in self_alliance_ids
-        )
-
-        # Attacker analysis (NPC/blue presence).
-        for a in attackers:
-            char_id = a.get("character_id")
-            if not char_id:
-                npc_present = True
-            else:
-                alliance_id = a.get("alliance_id")
-                corp_id = a.get("corporation_id")
-                if (alliance_id and int(alliance_id) in blue_alliance_ids) or (
-                    corp_id and int(corp_id) in blue_corp_ids
-                ):
-                    blue_involved = True
-
-            if npc_present and blue_involved:
-                break
-
+        # NPC presence (binary here; damage-share gating lives on the detail
+        # page for now).
+        npc_present = any(not a.get("character_id") for a in attackers)
         c.flag_npc = npc_present
-        c.flag_blue = blue_involved
 
         # Fitting preview (grouped, bounded).
         items = (victim_blob.get("items") or []) if victim_blob else []
@@ -673,24 +635,15 @@ def claim_detail(request, claim_id: int):
         ).get(int(victim_alliance_id))
 
     # ------------------------------------------------------------------
-    # Corp mismatch / Non-TNT flags
+    # Auto-checks (tri-state: WARN / CLEAN / neutral-when-unconfigured).
+    # Computed centrally so an empty SRPConfig renders a neutral
+    # "not configured" badge, never a false-green "all clear".
     # ------------------------------------------------------------------
     cfg = SRPConfig.get()
-    self_alliance_ids = set(
-        int(x) for x in (cfg.self_alliance_ids or []) if str(x).isdigit()
-    )
-
-    corp_mismatch = (
-        bool(victim_corp_id)
-        and bool(submitter_corp_id)
-        and int(victim_corp_id) != int(submitter_corp_id)
-    )
-
-    victim_non_tnt = (
-        bool(self_alliance_ids)
-        and bool(victim_alliance_id)
-        and int(victim_alliance_id) not in self_alliance_ids
-    )
+    checks = claim_auto_checks(claim, cfg)
+    check_blue = checks["blue"]
+    check_corp = checks["corp"]
+    check_non_tnt = checks["non_tnt"]
 
     # ------------------------------------------------------------------
     # Fitting grouping (slots, ammo filtered)
@@ -757,14 +710,8 @@ def claim_detail(request, claim_id: int):
     # ------------------------------------------------------------------
     # NPC / Blue flags
     # ------------------------------------------------------------------
+    # Blue-on-blue is computed centrally (tri-state) above via check_blue.
     npc_count = player_count = npc_damage = player_damage = 0
-
-    blue_alliance_ids = set(
-        int(x) for x in (cfg.blue_alliance_ids or []) if str(x).isdigit()
-    )
-    blue_corp_ids = set(int(x) for x in (cfg.blue_corp_ids or []) if str(x).isdigit())
-
-    blue_involved = False
 
     for a in attackers:
         dmg = int(a.get("damage_done") or 0)
@@ -773,12 +720,6 @@ def claim_detail(request, claim_id: int):
         if char_id:
             player_count += 1
             player_damage += dmg
-            if (
-                a.get("alliance_id") and int(a["alliance_id"]) in blue_alliance_ids
-            ) or (
-                a.get("corporation_id") and int(a["corporation_id"]) in blue_corp_ids
-            ):
-                blue_involved = True
         else:
             npc_count += 1
             npc_damage += dmg
@@ -861,9 +802,14 @@ def claim_detail(request, claim_id: int):
             # Flags
             "npc_only": npc_only,
             "npc_present": npc_present,
-            "blue_involved": blue_involved,
-            "corp_mismatch": corp_mismatch,
-            "victim_non_tnt": victim_non_tnt,
+            # Tri-state auto-checks (WARN / CLEAN / neutral-when-unconfigured)
+            "check_blue": check_blue,
+            "check_corp": check_corp,
+            "check_non_tnt": check_non_tnt,
+            # Back-compat booleans (summary card warning badges)
+            "blue_involved": check_blue.is_warn,
+            "corp_mismatch": check_corp.is_warn,
+            "victim_non_tnt": check_non_tnt.is_warn,
             # Damage
             "npc_count": npc_count,
             "player_count": player_count,

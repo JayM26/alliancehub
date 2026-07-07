@@ -189,21 +189,12 @@
               <span class="badge text-bg-success">No NPCs</span>
             {% endif %}
 
-            {% if blue_involved %}
-              <span class="badge text-bg-warning">Blue involved</span>
-            {% else %}
-              <span class="badge text-bg-success">No blues detected</span>
-            {% endif %}
-            {% if corp_mismatch %}
-              <span class="badge text-bg-warning">Corp mismatch (submitter vs victim)</span>
-            {% else %}
-              <span class="badge text-bg-success">Corps Match</span>
-            {% endif %}
-            {% if victim_non_tnt %}
-              <span class="badge text-bg-danger">Victim not in TNT</span>
-            {% else %}
-              <span class="badge text-bg-success">Victim is in TNT</span>
-            {% endif %}
+            {# Tri-state: green only when genuinely checked & clean; a neutral
+               (secondary) badge when the check is unconfigured/uncomputable —
+               never a false-green that reads as "checked & safe". #}
+            <span class="badge text-bg-{{ check_blue.badge_class }}">{{ check_blue.label }}</span>
+            <span class="badge text-bg-{{ check_corp.badge_class }}">{{ check_corp.label }}</span>
+            <span class="badge text-bg-{{ check_non_tnt.badge_class }}">{{ check_non_tnt.label }}</span>
 
           </div>
 

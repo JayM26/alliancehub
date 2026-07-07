@@ -227,20 +227,27 @@
           <!-- FLAGS COLUMN -->
           <td>
             <div class="d-flex flex-column gap-1">
-              {% if c.flag_blue %}
+              {# Only surface a flag when it WARNs or could NOT be computed (NA,
+                 neutral). A genuine CLEAN check shows nothing here (green lives
+                 on the detail page); a NA badge signals "not configured / not
+                 checked" so absence-of-flag never reads as "checked & safe". #}
+              {% if c.check_blue.is_warn %}
                 <span class="badge text-bg-warning">Blue</span>
+              {% elif c.check_blue.is_na %}
+                <span class="badge text-bg-secondary" title="{{ c.check_blue.label }}">Blue?</span>
               {% endif %}
               {% if c.flag_npc %}
                 <span class="badge text-bg-warning">NPC</span>
               {% endif %}
-              {% if c.flag_corp_mismatch %}
+              {% if c.check_corp.is_warn %}
                 <span class="badge text-bg-warning">Corp</span>
+              {% elif c.check_corp.is_na %}
+                <span class="badge text-bg-secondary" title="{{ c.check_corp.label }}">Corp?</span>
               {% endif %}
-              {% if c.flag_non_tnt %}
+              {% if c.check_non_tnt.is_warn %}
                 <span class="badge text-bg-danger">Non-TNT</span>
-              {% endif %}
-              {% if not c.flag_blue and not c.flag_npc and not c.flag_corp_mismatch and not c.flag_non_tnt %}
-                <span class="text-secondary small">—</span>
+              {% elif c.check_non_tnt.is_na %}
+                <span class="badge text-bg-secondary" title="{{ c.check_non_tnt.label }}">TNT?</span>
               {% endif %}
             </div>
           </td>
