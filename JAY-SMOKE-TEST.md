@@ -58,10 +58,10 @@ dashboard.** Token exchange succeeded (hand-rolled OAuth2 on `requests`), `login
 the session, and a User + EveCharacter + OAuth token persisted. This is the pass that surfaced
 the `NotSupportedError` callback bug (see top of file) — fixed and re-verified green.
 
-**The one thing worth your own eyes:** the **alt-link** flow (log in with a 2nd character →
-"Link as Alt" → re-auth with main → alt attaches). I created only a *main* (register-as-main);
-the alt-link path shares the same fixed `eve_callback` code so it's very likely fine, but I
-didn't have a second character to prove it. One optional confirmation login covers it.
+**Alt-link is now also proven** (2026-07-06, second run): logged in as `JayMT2` → "Link as Alt"
+→ re-auth as `JayMT` → callback → "Login Successful". DB confirms both characters under one
+account (`user_id=3`, main=JayMT). Nothing left for a human here — a confirmation login with your
+own characters is nice-to-have, not required.
 
 *Why it needed a real login at all:* the OAuth2 round-trip needs EVE's identity provider; a local
 Django superuser never traverses `eve_callback` — which is exactly why the bug hid until now.
@@ -120,6 +120,12 @@ Done on the `django-5.2-upgrade` branch, 2026-07-06, Docker dev stack, screensho
   eyeballed for layout/CSS defects, not just captured.
 - **Prod-shaped boot:** gunicorn + `DEBUG=0` one-off container — boots clean, pages 200,
   WhiteNoise serves content-hashed manifest assets, production 404 page (see struck item 5).
+- **Full-view sweep (22 endpoints, 0 failures):** after the callback fix, drove every SRP/eve_sso
+  view via Django's test `Client` as superuser — all GETs (incl. filtered/aggregate querystring
+  branches) plus the mutating POSTs that browser testing hadn't hit: reviewer edit-claim save,
+  ship-payout edit save, and fit-check rerun. Zero 500s. Grep confirmed no other
+  `select_for_update`-across-nullable-join (the one sibling lock is single-table) and no other
+  Django-5.2 runtime query hazards in this codebase.
 - **Crispy finding (matters):** `crispy-bootstrap5` was bumped `0.7 → 2026.3` and
   `django-crispy-forms 2.3 → 2.6`, and both load cleanly under 5.2 (they're in `INSTALLED_APPS`;
   `check` passes; app boots). BUT the app **never actually invokes crispy** — there are zero
