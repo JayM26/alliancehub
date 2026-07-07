@@ -9,6 +9,7 @@ urlpatterns = [
     path("my-claims/", views.my_claims, name="my_claims"),
     # reviewer queue + actions
     path("queue/", views.review_queue, name="review_queue"),
+    path("queue/batch/", views.batch_action, name="batch_action"),
     path("claim/<int:claim_id>/", views.claim_detail, name="claim_detail"),
     path("queue/<int:claim_id>/approve/", views.approve_claim, name="approve_claim"),
     path("queue/<int:claim_id>/deny/", views.deny_claim, name="deny_claim"),

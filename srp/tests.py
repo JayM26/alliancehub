@@ -676,3 +676,150 @@ class SRPReviewerEditGuardTests(TestCase):
         self.assertTrue(
             ClaimReview.objects.filter(claim=claim, action="Edited").exists()
         )
+
+
+# ---------------------------------------------------------------------------
+# B1 — Batch actions + default-to-Pending (Cluster B). Batch approve must run
+# the same per-claim safeguards as single approve: money-warning claims are
+# SKIPPED (not approved), illegal transitions are skipped (never 500), every
+# processed claim writes its own audit row, and the queue defaults to PENDING.
+# ---------------------------------------------------------------------------
+class SRPBatchActionTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import Permission
+
+        self.reviewer = User.objects.create_user(username="rev", password="x")
+        perm = Permission.objects.get(
+            content_type__app_label="srp", codename="can_review_srp"
+        )
+        self.reviewer.user_permissions.add(perm)
+        self.client.force_login(self.reviewer)
+
+        cfg = SRPConfig.get()
+        cfg.auto_calculate_payouts = True
+        cfg.default_multiplier = Decimal("1")
+        cfg.monthly_ceiling_strategic = Decimal("0")
+        cfg.monthly_ceiling_peacetime = Decimal("0")
+        cfg.save()
+
+    def _ship(self, name, **cols):
+        d = dict(strategic=0, peacetime=0, shitstack=0, tnt_special=0)
+        d.update(cols)
+        return ShipPayout.objects.create(ship_name=name, **d)
+
+    def _claim(self, ship=None, category="STRATEGIC", status="PENDING", **extra):
+        return SRPClaim.objects.create(
+            submitter=self.reviewer,
+            character_name="Pilot",
+            category=category,
+            ship=ship,
+            status=status,
+            broadcast_text="op",
+            esi_link="https://esi.evetech.net/latest/killmails/1/abc/",
+            **extra,
+        )
+
+    def test_batch_approve_skips_unfunded_and_audits_rest(self):
+        funded = self._claim(ship=self._ship("Funded", strategic=M100))
+        unfunded = self._claim(ship=self._ship("Unfunded", strategic=0))
+        resp = self.client.post(
+            "/srp/queue/batch/",
+            {
+                "batch_action": "approve",
+                "claim_ids": [funded.id, unfunded.id],
+                "comment": "batch pass",
+            },
+        )
+        self.assertEqual(resp.status_code, 302)
+        funded.refresh_from_db()
+        unfunded.refresh_from_db()
+        self.assertEqual(funded.status, "APPROVED")
+        self.assertEqual(funded.payout_amount, M100)  # frozen snapshot at approval
+        self.assertEqual(unfunded.status, "PENDING")  # skipped, NOT approved
+        self.assertTrue(
+            ClaimReview.objects.filter(claim=funded, action="Approved").exists()
+        )
+        self.assertFalse(
+            ClaimReview.objects.filter(claim=unfunded, action="Approved").exists()
+        )
+
+    def test_batch_approve_skips_over_ceiling(self):
+        cfg = SRPConfig.get()
+        cfg.monthly_ceiling_strategic = M50
+        cfg.save()
+        big = self._claim(ship=self._ship("Big", strategic=M100))  # 100M > 50M
+        resp = self.client.post(
+            "/srp/queue/batch/",
+            {"batch_action": "approve", "claim_ids": [big.id]},
+        )
+        self.assertEqual(resp.status_code, 302)
+        big.refresh_from_db()
+        self.assertEqual(big.status, "PENDING")  # skipped: over ceiling
+        self.assertFalse(
+            ClaimReview.objects.filter(claim=big, action="Approved").exists()
+        )
+
+    def test_batch_approve_skips_illegal_transition_no_500(self):
+        paid = self._claim(ship=self._ship("Paid", strategic=M100))
+        paid.set_status("APPROVED", reviewer=self.reviewer)
+        paid.save()
+        paid.set_status("PAID", reviewer=self.reviewer)
+        paid.paid_at = timezone.now()
+        paid.save()
+        resp = self.client.post(
+            "/srp/queue/batch/",
+            {"batch_action": "approve", "claim_ids": [paid.id]},
+        )
+        self.assertEqual(resp.status_code, 302)  # redirect, never 500
+        paid.refresh_from_db()
+        self.assertEqual(paid.status, "PAID")  # unchanged
+
+    def test_batch_deny_shared_note_audits_each(self):
+        c1 = self._claim(ship=self._ship("A", strategic=M100))
+        c2 = self._claim(ship=self._ship("B", strategic=M100))
+        resp = self.client.post(
+            "/srp/queue/batch/",
+            {
+                "batch_action": "deny",
+                "claim_ids": [c1.id, c2.id],
+                "comment": "spy loss",
+            },
+        )
+        self.assertEqual(resp.status_code, 302)
+        c1.refresh_from_db()
+        c2.refresh_from_db()
+        self.assertEqual(c1.status, "DENIED")
+        self.assertEqual(c2.status, "DENIED")
+        self.assertTrue(
+            ClaimReview.objects.filter(
+                claim=c1, action="Denied", comment="spy loss"
+            ).exists()
+        )
+        self.assertTrue(
+            ClaimReview.objects.filter(
+                claim=c2, action="Denied", comment="spy loss"
+            ).exists()
+        )
+
+    def test_queue_defaults_to_pending(self):
+        pending = self._claim(ship=self._ship("P", strategic=M100))
+        approved = self._claim(ship=self._ship("Q", strategic=M100))
+        approved.set_status("APPROVED", reviewer=self.reviewer)
+        approved.save()
+
+        resp = self.client.get("/srp/queue/")
+        self.assertEqual(resp.context["status"], "PENDING")
+        ids = [c.id for c in resp.context["claims"]]
+        self.assertIn(pending.id, ids)
+        self.assertNotIn(approved.id, ids)  # non-pending hidden by default
+
+    def test_queue_status_all_shows_everything(self):
+        pending = self._claim(ship=self._ship("P", strategic=M100))
+        approved = self._claim(ship=self._ship("Q", strategic=M100))
+        approved.set_status("APPROVED", reviewer=self.reviewer)
+        approved.save()
+
+        resp = self.client.get("/srp/queue/?status=all")
+        ids = [c.id for c in resp.context["claims"]]
+        self.assertIn(pending.id, ids)
+        self.assertIn(approved.id, ids)

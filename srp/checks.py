@@ -77,6 +77,40 @@ def category_ceiling_status(category, cfg=None):
     }
 
 
+def approve_block_reason(claim, cfg=None):
+    """
+    Reason a PENDING claim should be SKIPPED by a batch-approve — a per-claim
+    money warning a reviewer must see individually — or None if it's safe to
+    auto-approve (B1 / Cluster B).
+
+    Batch approve must never bypass the safeguards single-approve surfaces as
+    warnings (P0 + Cluster A), so it turns those warnings into skips:
+      - needs_manual_payout (0-ISK / unfunded)            -> "no payout set"
+      - approving it would push this month's category
+        total over the soft monthly ceiling               -> "over <Cat> ceiling"
+
+    ``cfg`` defaults to the SRPConfig singleton. This is advisory only: the
+    reviewer can still approve a skipped claim singly (where they'll see the
+    full warning). Illegal transitions are NOT handled here — the caller guards
+    those (a non-PENDING claim never reaches this check).
+    """
+    from .models import SRPClaim, SRPConfig
+
+    cfg = cfg or SRPConfig.get()
+
+    if claim.needs_manual_payout:
+        return "no payout set"
+
+    ceiling = category_ceiling_status(claim.category, cfg)
+    if ceiling:
+        prospective = claim.calculate_payout() or Decimal("0")
+        projected = (ceiling["total"] or Decimal("0")) + prospective
+        if projected > ceiling["ceiling"]:
+            return f"over {SRPClaim.category_label(claim.category)} ceiling"
+
+    return None
+
+
 class CheckResult:
     """One auto-check outcome: a tri-state (plus INFO) + a human label."""
 

@@ -40,10 +40,38 @@
 </form>
 
 {% if claims %}
+  {# Batch action bar. Inputs in the table rows below associate with this form
+     via form="batchForm" so we never nest <form>s (the per-row action form
+     stays separate). Approve/Deny post to the batch endpoint, which re-runs the
+     per-claim safeguards and skips (never approves) money-warning claims. #}
+  <form id="batchForm" method="post" action="{% url 'srp:batch_action' %}" class="mb-2">
+    {% csrf_token %}
+    <div class="d-flex gap-2 align-items-center flex-wrap">
+      <span class="text-secondary small">Batch:</span>
+      <button type="submit" name="batch_action" value="approve" class="btn btn-success btn-sm">
+        Approve selected
+      </button>
+      <button type="submit" name="batch_action" value="deny" class="btn btn-danger btn-sm">
+        Deny selected
+      </button>
+      <input type="text" name="comment" class="form-control form-control-sm"
+             style="max-width: 320px;"
+             placeholder="Shared note (applied to each, optional)" />
+      <span class="text-secondary small"><span id="batchCount">0</span> selected</span>
+    </div>
+    <div class="text-secondary small mt-1">
+      Batch approve skips any claim with a money warning (no payout set, over a monthly
+      ceiling) or an illegal transition and tells you which — handle those individually.
+    </div>
+  </form>
+
   <div class="table-responsive">
     <table class="table table-dark table-striped table-hover align-middle">
       <thead>
         <tr>
+          <th style="width:1%;">
+            <input type="checkbox" id="selectAll" form="batchForm" title="Select all" />
+          </th>
           <th>Submitted</th>
           <th>Submitter</th>
           <th>
@@ -72,6 +100,10 @@
       <tbody>
         {% for c in claims %}
         <tr>
+          <td class="text-center">
+            <input type="checkbox" class="batch-check" name="claim_ids"
+                   value="{{ c.id }}" form="batchForm" />
+          </td>
           <td>{{ c.submitted_at|date:"Y-m-d H:i" }}</td>
           <td>{{ c.submitter.username }}</td>
           <td class="text-nowrap">
@@ -304,6 +336,24 @@
 {% block extra_js %}
 <script>
   document.addEventListener("DOMContentLoaded", function () {
+    // --- Batch select-all + live count ---
+    const selectAll = document.getElementById("selectAll");
+    const checks = [].slice.call(document.querySelectorAll(".batch-check"));
+    const countEl = document.getElementById("batchCount");
+    function updateBatchCount() {
+      const n = checks.filter(function (c) { return c.checked; }).length;
+      if (countEl) countEl.textContent = n;
+      if (selectAll) selectAll.checked = n > 0 && n === checks.length;
+    }
+    if (selectAll) {
+      selectAll.addEventListener("change", function () {
+        checks.forEach(function (c) { c.checked = selectAll.checked; });
+        updateBatchCount();
+      });
+    }
+    checks.forEach(function (c) { c.addEventListener("change", updateBatchCount); });
+    updateBatchCount();
+
     const triggers = [].slice.call(document.querySelectorAll('[data-bs-toggle="popover"]'));
     triggers.forEach(function (el) {
       new bootstrap.Popover(el, {

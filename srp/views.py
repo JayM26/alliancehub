@@ -43,7 +43,11 @@ from django.views.decorators.http import (  # pyright: ignore[reportMissingModul
     require_POST,
 )
 
-from .checks import category_ceiling_status, claim_auto_checks
+from .checks import (
+    approve_block_reason,
+    category_ceiling_status,
+    claim_auto_checks,
+)
 from .esi import fetch_type_name, get_type_names_cached, populate_claim_from_esi
 from .fit_importer import import_eft_fit
 from .fitcheck import ensure_fitcheck_cached
@@ -169,7 +173,7 @@ def my_claims(request):
 def review_queue(request):
     """
     Reviewer queue with simple filters:
-    - status (default: ALL)
+    - status (default: PENDING — the queue's real job; ?status=all shows everything)
     - category
     - search (character/ship/system/link)
 
@@ -180,7 +184,9 @@ def review_queue(request):
     - fitting_item_count: int
     - fitting_groups_preview: list[tuple[group_name, list[str]]]
     """
-    status = (request.GET.get("status") or "ALL").strip().upper()
+    # Default to PENDING (the reviewer's actual working set) when no explicit
+    # status param is given; an explicit ?status=all still shows everything.
+    status = (request.GET.get("status") or "PENDING").strip().upper()
     category = (request.GET.get("category") or "").strip().upper()
     search = (request.GET.get("q", "") or "").strip()
 
@@ -396,6 +402,104 @@ def pay_claim(request, claim_id: int):
         messages.success(request, f"Marked claim #{claim.id} as Paid.")
 
     return redirect(request.META.get("HTTP_REFERER", "srp:review_queue"))
+
+
+@login_required
+@permission_required("srp.can_review_srp", raise_exception=True)
+@require_POST
+def batch_action(request):
+    """
+    Apply Approve or Deny to a set of selected claims in one request (B1).
+
+    CRITICAL: batch approve must NOT bypass the per-claim safeguards P0 +
+    Cluster A built. For each selected claim it runs the same checks as single
+    approve; a claim that would trigger a money warning (unfunded, over the soft
+    monthly ceiling) or isn't a legal transition is SKIPPED — never approved —
+    and the result message reports exactly what happened, so the reviewer can
+    handle the skipped ones singly (where they'll see the full warning). Every
+    approved/denied claim writes its own ClaimReview audit row, same as the
+    single actions. Illegal transitions are skipped and reported, never 500.
+    """
+    fallback = request.META.get("HTTP_REFERER") or "srp:review_queue"
+
+    action = (request.POST.get("batch_action") or "").strip().lower()
+    if action not in {"approve", "deny"}:
+        messages.error(request, "Unknown batch action.")
+        return redirect(fallback)
+
+    comment = _get_comment(request)
+    claim_ids = [
+        int(x) for x in request.POST.getlist("claim_ids") if str(x).isdigit()
+    ]
+    if not claim_ids:
+        messages.warning(request, "No claims were selected.")
+        return redirect(fallback)
+
+    cfg = SRPConfig.get()
+    claims = SRPClaim.objects.filter(id__in=claim_ids)
+
+    done = 0
+    skipped: list[str] = []
+
+    for claim in claims:
+        if action == "approve":
+            # Same safeguards as single-approve: only PENDING is a legal source,
+            # and money-warning claims are skipped (not silently approved).
+            if claim.status != SRPClaim.Status.PENDING:
+                skipped.append(
+                    f"#{claim.id} not pending ({claim.get_status_display()})"
+                )
+                continue
+            reason = approve_block_reason(claim, cfg)
+            if reason:
+                skipped.append(f"#{claim.id} {reason}")
+                continue
+            try:
+                claim.set_status(
+                    "APPROVED",
+                    reviewer=request.user,
+                    note=comment or "Approved (batch).",
+                )
+                claim.save()
+            except ValueError:
+                skipped.append(f"#{claim.id} illegal transition")
+                continue
+            _add_review_record(claim, request.user, "Approved", comment)
+            done += 1
+        else:  # deny — legal from PENDING or APPROVED (not DENIED/PAID)
+            if claim.status not in {
+                SRPClaim.Status.PENDING,
+                SRPClaim.Status.APPROVED,
+            }:
+                skipped.append(
+                    f"#{claim.id} not deniable ({claim.get_status_display()})"
+                )
+                continue
+            try:
+                claim.set_status(
+                    "DENIED",
+                    reviewer=request.user,
+                    note=comment or "Denied (batch).",
+                )
+                claim.save()
+            except ValueError:
+                skipped.append(f"#{claim.id} illegal transition")
+                continue
+            _add_review_record(claim, request.user, "Denied", comment)
+            done += 1
+
+    verb = "approved" if action == "approve" else "denied"
+    parts = [f"{done} {verb}"]
+    if skipped:
+        parts.append(f"{len(skipped)} skipped — " + ", ".join(skipped))
+    summary = "; ".join(parts)
+
+    if skipped:
+        messages.warning(request, summary)
+    else:
+        messages.success(request, summary)
+
+    return redirect(fallback)
 
 
 def _require_reviewer(user) -> bool:
