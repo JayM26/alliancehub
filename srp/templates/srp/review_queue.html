@@ -236,8 +236,10 @@
               {% elif c.check_blue.is_na %}
                 <span class="badge text-bg-secondary" title="{{ c.check_blue.label }}">Blue?</span>
               {% endif %}
-              {% if c.flag_npc %}
-                <span class="badge text-bg-warning">NPC</span>
+              {% if c.check_npc.is_warn %}
+                <span class="badge text-bg-warning">{{ c.check_npc.label }}</span>
+              {% elif c.check_npc.is_neutral and c.check_npc.npc_present %}
+                <span class="badge text-bg-secondary" title="Below NPC-damage flag threshold">{{ c.check_npc.label }}</span>
               {% endif %}
               {% if c.check_corp.is_warn %}
                 <span class="badge text-bg-warning">Corp</span>

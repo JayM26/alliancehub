@@ -156,10 +156,81 @@ def non_tnt_check(claim, cfg) -> CheckResult:
     return CheckResult(CheckResult.CLEAN, "Victim is in TNT", warn_class="danger")
 
 
+def npc_check(claim, cfg) -> CheckResult:
+    """
+    NPC-involvement check, gated by SRPConfig.npc_damage_threshold.
+
+    The old flag fired on ANY NPC attacker — a 0-damage gate gun tripped it the
+    same as a 90%-damage rat, so reviewers got alarm fatigue. Now:
+
+      - no NPC attackers            -> CLEAN  ("No NPCs")
+      - NPC-only kill               -> WARN   (unambiguous ratting death,
+                                               flagged regardless of threshold)
+      - NPC damage share >= threshold -> WARN ("NPC 90%")
+      - NPC damage share <  threshold -> INFO (neutral "NPC 12%", not a warning)
+      - threshold not configured (cfg is None) -> NA (neutral sentinel), never
+                                               a false-clean
+
+    The result also carries the raw damage counts/percentages as attributes so
+    callers don't recompute them.
+    """
+    km = claim.killmail_raw or {}
+    attackers = km.get("attackers") or []
+
+    npc_count = player_count = npc_damage = player_damage = 0
+    for a in attackers:
+        dmg = int(a.get("damage_done") or 0)
+        if a.get("character_id"):
+            player_count += 1
+            player_damage += dmg
+        else:
+            npc_count += 1
+            npc_damage += dmg
+
+    total_damage = npc_damage + player_damage
+    npc_damage_pct = (
+        round((npc_damage / total_damage) * 100, 1) if total_damage else 0
+    )
+    player_damage_pct = (
+        round((player_damage / total_damage) * 100, 1) if total_damage else 0
+    )
+    npc_present = npc_count > 0
+    npc_only = player_count == 0 and npc_count > 0
+
+    threshold = getattr(cfg, "npc_damage_threshold", None) if cfg else None
+
+    if not npc_present:
+        res = CheckResult(CheckResult.CLEAN, "No NPCs")
+    elif npc_only:
+        res = CheckResult(CheckResult.WARN, f"NPC only ({npc_damage_pct}%)")
+    elif threshold is None:
+        # Defensive: no SRPConfig at all -> can't apply a threshold. Neutral
+        # sentinel, never a false-clean.
+        res = CheckResult(
+            CheckResult.NA, f"NPC {npc_damage_pct}% (threshold not configured)"
+        )
+    elif npc_damage_pct >= threshold:
+        res = CheckResult(CheckResult.WARN, f"NPC {npc_damage_pct}%")
+    else:
+        res = CheckResult(CheckResult.INFO, f"NPC {npc_damage_pct}%")
+
+    # Carry the numbers for display (avoids recompute in the view/template).
+    res.npc_count = npc_count
+    res.player_count = player_count
+    res.npc_damage = npc_damage
+    res.player_damage = player_damage
+    res.npc_damage_pct = npc_damage_pct
+    res.player_damage_pct = player_damage_pct
+    res.npc_present = npc_present
+    res.npc_only = npc_only
+    return res
+
+
 def claim_auto_checks(claim, cfg) -> dict[str, CheckResult]:
     """Bundle the config/data-dependent auto-checks for a claim."""
     return {
         "blue": blue_check(claim, cfg),
         "corp": corp_mismatch_check(claim),
         "non_tnt": non_tnt_check(claim, cfg),
+        "npc": npc_check(claim, cfg),
     }

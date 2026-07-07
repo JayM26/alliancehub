@@ -93,6 +93,16 @@ class SRPConfig(models.Model):
     )
     auto_calculate_payouts = models.BooleanField(default=True)
     default_multiplier = models.DecimalField(max_digits=6, decimal_places=2, default=1)
+    npc_damage_threshold = models.PositiveIntegerField(
+        default=50,
+        validators=[MinValueValidator(0)],
+        help_text=(
+            "NPC damage share (percent, 0-100) at or above which a claim is "
+            "FLAGGED as an NPC/ratting loss. Below this, NPC involvement is "
+            "shown as neutral info, not a warning. NPC-only kills are always "
+            "flagged regardless of this value. Default 50."
+        ),
+    )
     self_alliance_ids = models.JSONField(default=list, blank=True)
     blue_alliance_ids = models.JSONField(default=list, blank=True)
     blue_corp_ids = models.JSONField(default=list, blank=True)

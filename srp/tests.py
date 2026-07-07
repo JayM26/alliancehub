@@ -18,7 +18,13 @@ from django.contrib.auth import get_user_model  # pyright: ignore[reportMissingM
 from django.test import TestCase  # pyright: ignore[reportMissingModuleSource]
 from django.utils import timezone  # pyright: ignore[reportMissingModuleSource]
 
-from .checks import CheckResult, blue_check, corp_mismatch_check, non_tnt_check
+from .checks import (
+    CheckResult,
+    blue_check,
+    corp_mismatch_check,
+    non_tnt_check,
+    npc_check,
+)
 from .models import ShipPayout, SRPClaim, SRPConfig
 
 User = get_user_model()
@@ -297,3 +303,87 @@ class SRPAutoCheckTests(TestCase):
         claim = qs.get(id=claim.id)
         res = corp_mismatch_check(claim)
         self.assertEqual(res.state, CheckResult.CLEAN)
+
+
+# ---------------------------------------------------------------------------
+# A2 — NPC flag gated by SRPConfig.npc_damage_threshold (no more over-firing).
+# ---------------------------------------------------------------------------
+class SRPNpcCheckTests(TestCase):
+    """
+    The NPC flag must not fire on any NPC attacker regardless of damage. It
+    fires only when NPC-only or NPC damage share >= threshold; below-threshold
+    involvement is neutral info that carries the %. Missing config -> neutral
+    sentinel, never a false-clean.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="pilot", password="x")
+
+    def _claim(self, attackers):
+        return SRPClaim.objects.create(
+            submitter=self.user,
+            character_name="Pilot",
+            category="STRATEGIC",
+            status="PENDING",
+            esi_link="https://esi.evetech.net/latest/killmails/1/abc/",
+            killmail_raw={"attackers": attackers, "victim": {}},
+        )
+
+    def _cfg(self, threshold=50):
+        cfg = SRPConfig.get()
+        cfg.npc_damage_threshold = threshold
+        cfg.save()
+        return cfg
+
+    def test_no_npc_is_clean(self):
+        cfg = self._cfg()
+        claim = self._claim([{"character_id": 1, "damage_done": 100}])
+        res = npc_check(claim, cfg)
+        self.assertEqual(res.state, CheckResult.CLEAN)
+
+    def test_npc_only_always_warns(self):
+        cfg = self._cfg(threshold=90)  # even with a high threshold
+        claim = self._claim([{"damage_done": 100}])  # no character_id -> NPC
+        res = npc_check(claim, cfg)
+        self.assertEqual(res.state, CheckResult.WARN)
+        self.assertIn("NPC only", res.label)
+
+    def test_npc_above_threshold_warns_and_carries_pct(self):
+        cfg = self._cfg(threshold=50)
+        claim = self._claim(
+            [
+                {"damage_done": 90},  # NPC, 90%
+                {"character_id": 1, "damage_done": 10},  # player, 10%
+            ]
+        )
+        res = npc_check(claim, cfg)
+        self.assertEqual(res.state, CheckResult.WARN)
+        self.assertEqual(res.npc_damage_pct, 90.0)
+        self.assertIn("90", res.label)
+
+    def test_npc_below_threshold_is_neutral_info_not_warn(self):
+        cfg = self._cfg(threshold=50)
+        claim = self._claim(
+            [
+                {"damage_done": 10},  # NPC, 10% (e.g. a gate gun tick)
+                {"character_id": 1, "damage_done": 90},  # player, 90%
+            ]
+        )
+        res = npc_check(claim, cfg)
+        self.assertEqual(res.state, CheckResult.INFO)
+        self.assertEqual(res.badge_class, "secondary")  # neutral, NOT warning
+        self.assertTrue(res.npc_present)
+        self.assertIn("10", res.label)
+
+    def test_threshold_unconfigured_cfg_none_is_neutral_sentinel(self):
+        # Defensive: no SRPConfig at all -> neutral sentinel, never false-clean.
+        claim = self._claim(
+            [
+                {"damage_done": 90},
+                {"character_id": 1, "damage_done": 10},
+            ]
+        )
+        res = npc_check(claim, None)
+        self.assertEqual(res.state, CheckResult.NA)
+        self.assertEqual(res.badge_class, "secondary")
+        self.assertIn("not configured", res.label.lower())

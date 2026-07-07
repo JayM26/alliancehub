@@ -221,11 +221,10 @@ def review_queue(request):
         c.check_blue = checks["blue"]
         c.check_corp = checks["corp"]
         c.check_non_tnt = checks["non_tnt"]
-
-        # NPC presence (binary here; damage-share gating lives on the detail
-        # page for now).
-        npc_present = any(not a.get("character_id") for a in attackers)
-        c.flag_npc = npc_present
+        # NPC involvement, gated by SRPConfig.npc_damage_threshold. WARN only
+        # when NPC-only or NPC damage >= threshold; below-threshold involvement
+        # renders as neutral info (carries the %), never a bare binary alarm.
+        c.check_npc = checks["npc"]
 
         # Fitting preview (grouped, bounded).
         items = (victim_blob.get("items") or []) if victim_blob else []
@@ -644,6 +643,7 @@ def claim_detail(request, claim_id: int):
     check_blue = checks["blue"]
     check_corp = checks["corp"]
     check_non_tnt = checks["non_tnt"]
+    check_npc = checks["npc"]
 
     # ------------------------------------------------------------------
     # Fitting grouping (slots, ammo filtered)
@@ -710,28 +710,16 @@ def claim_detail(request, claim_id: int):
     # ------------------------------------------------------------------
     # NPC / Blue flags
     # ------------------------------------------------------------------
-    # Blue-on-blue is computed centrally (tri-state) above via check_blue.
-    npc_count = player_count = npc_damage = player_damage = 0
-
-    for a in attackers:
-        dmg = int(a.get("damage_done") or 0)
-        char_id = a.get("character_id")
-
-        if char_id:
-            player_count += 1
-            player_damage += dmg
-        else:
-            npc_count += 1
-            npc_damage += dmg
-
-    total_damage = npc_damage + player_damage
-    npc_damage_pct = round((npc_damage / total_damage) * 100, 1) if total_damage else 0
-    player_damage_pct = (
-        round((player_damage / total_damage) * 100, 1) if total_damage else 0
-    )
-
-    npc_only = player_count == 0 and npc_count > 0
-    npc_present = npc_count > 0
+    # Blue-on-blue and NPC involvement are computed centrally (tri-state) above
+    # via check_blue / check_npc. Pull the NPC damage numbers off the result.
+    npc_count = check_npc.npc_count
+    player_count = check_npc.player_count
+    npc_damage = check_npc.npc_damage
+    player_damage = check_npc.player_damage
+    npc_damage_pct = check_npc.npc_damage_pct
+    player_damage_pct = check_npc.player_damage_pct
+    npc_only = check_npc.npc_only
+    npc_present = check_npc.npc_present
 
     # ------------------------------------------------------------------
     # Reviewer edit form
@@ -806,6 +794,7 @@ def claim_detail(request, claim_id: int):
             "check_blue": check_blue,
             "check_corp": check_corp,
             "check_non_tnt": check_non_tnt,
+            "check_npc": check_npc,
             # Back-compat booleans (summary card warning badges)
             "blue_involved": check_blue.is_warn,
             "corp_mismatch": check_corp.is_warn,

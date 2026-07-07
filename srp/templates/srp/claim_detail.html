@@ -177,17 +177,13 @@
           <strong>Auto-checks</strong>
 
           <div class="mt-2 d-flex flex-wrap gap-2">
-            {% if npc_only %}
-              <span class="badge text-bg-warning">NPC only</span>
-            {% else %}
-              <span class="badge text-bg-success">Not NPC-only</span>
-            {% endif %}
-
-            {% if npc_present %}
-              <span class="badge text-bg-warning">NPC present</span>
-            {% else %}
-              <span class="badge text-bg-success">No NPCs</span>
-            {% endif %}
+            {# NPC involvement, gated by the configured damage threshold.
+               WARN (amber) when NPC-only or NPC damage >= threshold; neutral
+               (grey) with the % when NPC damage is below threshold or the
+               threshold is unset; green only when there are genuinely no NPCs.
+               Carries the actual damage share so a 0-damage gate gun no longer
+               reads like a 90%-damage rat. #}
+            <span class="badge text-bg-{{ check_npc.badge_class }}">{{ check_npc.label }}</span>
 
             {# Tri-state: green only when genuinely checked & clean; a neutral
                (secondary) badge when the check is unconfigured/uncomputable —
