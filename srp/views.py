@@ -43,7 +43,7 @@ from django.views.decorators.http import (  # pyright: ignore[reportMissingModul
     require_POST,
 )
 
-from .checks import claim_auto_checks
+from .checks import category_ceiling_status, claim_auto_checks
 from .esi import fetch_type_name, get_type_names_cached, populate_claim_from_esi
 from .fit_importer import import_eft_fit
 from .fitcheck import ensure_fitcheck_cached
@@ -324,6 +324,15 @@ def approve_claim(request, claim_id: int):
                 request,
                 f"⚠ Claim #{claim.id} has no configured payout (0 ISK) — set a "
                 f"Manual amount or configure the ship payout before paying.",
+            )
+        # Soft monthly-ceiling warning (never a hard block).
+        ceiling = category_ceiling_status(claim.category)
+        if ceiling and ceiling["over"]:
+            messages.warning(
+                request,
+                f"⚠ {SRPClaim.category_label(claim.category)} approvals this "
+                f"month now total {ceiling['total']:,.0f} ISK, over the "
+                f"{ceiling['ceiling']:,.0f} ISK monthly ceiling.",
             )
 
     return redirect(request.META.get("HTTP_REFERER", "srp:review_queue"))

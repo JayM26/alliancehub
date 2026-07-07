@@ -21,6 +21,7 @@ from django.utils import timezone  # pyright: ignore[reportMissingModuleSource]
 from .checks import (
     CheckResult,
     blue_check,
+    category_ceiling_status,
     corp_mismatch_check,
     non_tnt_check,
     npc_check,
@@ -387,3 +388,108 @@ class SRPNpcCheckTests(TestCase):
         self.assertEqual(res.state, CheckResult.NA)
         self.assertEqual(res.badge_class, "secondary")
         self.assertIn("not configured", res.label.lower())
+
+
+# ---------------------------------------------------------------------------
+# A3 — dead multiplier + ceilings are now wired in.
+# ---------------------------------------------------------------------------
+class SRPMultiplierCeilingTests(TestCase):
+    def setUp(self):
+        cfg = SRPConfig.get()
+        cfg.auto_calculate_payouts = True
+        cfg.default_multiplier = Decimal("1")
+        cfg.monthly_ceiling_peacetime = Decimal("0")
+        cfg.monthly_ceiling_strategic = Decimal("0")
+        cfg.save()
+        self.user = User.objects.create_user(username="pilot", password="x")
+
+    def _ship(self, name="Rifter", **cols):
+        defaults = dict(strategic=0, peacetime=0, shitstack=0, tnt_special=0)
+        defaults.update(cols)
+        return ShipPayout.objects.create(ship_name=name, **defaults)
+
+    def _claim(self, category="STRATEGIC", ship=None, status="PENDING", **extra):
+        return SRPClaim.objects.create(
+            submitter=self.user,
+            character_name="Pilot",
+            category=category,
+            ship=ship,
+            status=status,
+            esi_link="https://esi.evetech.net/latest/killmails/1/abc/",
+            **extra,
+        )
+
+    def _set_multiplier(self, m):
+        cfg = SRPConfig.get()
+        cfg.default_multiplier = Decimal(str(m))
+        cfg.save()
+
+    # -- multiplier ------------------------------------------------------
+    def test_multiplier_default_one_is_behavior_neutral(self):
+        ship = self._ship(strategic=M100)
+        claim = self._claim(ship=ship)
+        self.assertEqual(claim.payout_amount, M100)
+
+    def test_multiplier_scales_pending_payout(self):
+        self._set_multiplier(2)
+        ship = self._ship(strategic=M100)
+        claim = self._claim(ship=ship)  # save() recomputes while PENDING
+        self.assertEqual(claim.payout_amount, M200)
+        self.assertEqual(claim.calculate_payout(), M200)
+
+    def test_multiplier_respects_freeze(self):
+        # Approve at 1x -> frozen 100M. Later multiplier bump must NOT re-scale.
+        ship = self._ship(strategic=M100)
+        claim = self._claim(ship=ship)
+        claim.set_status("APPROVED", reviewer=self.user)
+        claim.save()
+        self.assertEqual(claim.payout_amount, M100)
+
+        self._set_multiplier(3)
+        claim.refresh_from_db()
+        claim.save()  # re-save of an APPROVED claim: frozen, no re-scale
+        self.assertEqual(claim.payout_amount, M100)
+
+    def test_multiplier_never_scales_manual(self):
+        self._set_multiplier(5)
+        claim = self._claim(
+            category="MANUAL", payout_amount=M50, reviewer=self.user
+        )
+        self.assertEqual(claim.payout_amount, M50)
+
+    # -- ceilings --------------------------------------------------------
+    def _approved_peacetime(self, amount):
+        ship = self._ship(name=f"P{amount}", peacetime=amount)
+        claim = self._claim(category="PEACETIME", ship=ship, broadcast_text="op")
+        claim.set_status("APPROVED", reviewer=self.user)
+        claim.save()
+        return claim
+
+    def test_ceiling_disabled_when_zero(self):
+        cfg = SRPConfig.get()  # monthly_ceiling_peacetime == 0
+        self.assertIsNone(category_ceiling_status("PEACETIME", cfg))
+
+    def test_ceiling_no_field_for_category(self):
+        cfg = SRPConfig.get()
+        cfg.monthly_ceiling_peacetime = M200
+        cfg.save()
+        # SHITSTACK has no ceiling field -> always None.
+        self.assertIsNone(category_ceiling_status("SHITSTACK", cfg))
+
+    def test_ceiling_under_is_not_over(self):
+        cfg = SRPConfig.get()
+        cfg.monthly_ceiling_peacetime = M200
+        cfg.save()
+        self._approved_peacetime(M100)
+        r = category_ceiling_status("PEACETIME", cfg)
+        self.assertEqual(r["total"], M100)
+        self.assertFalse(r["over"])
+
+    def test_ceiling_over_trips_warning(self):
+        cfg = SRPConfig.get()
+        cfg.monthly_ceiling_peacetime = M50
+        cfg.save()
+        self._approved_peacetime(M100)  # 100M > 50M ceiling
+        r = category_ceiling_status("PEACETIME", cfg)
+        self.assertEqual(r["total"], M100)
+        self.assertTrue(r["over"])

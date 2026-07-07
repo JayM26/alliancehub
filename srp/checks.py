@@ -19,6 +19,63 @@ reviewer mistakes for "checked & safe".
 
 from __future__ import annotations
 
+from decimal import Decimal
+
+
+# Category -> SRPConfig field holding its soft monthly ceiling. Categories not
+# listed here have no ceiling concept (no field), so they're never checked.
+CATEGORY_CEILING_FIELDS = {
+    "PEACETIME": "monthly_ceiling_peacetime",
+    "STRATEGIC": "monthly_ceiling_strategic",
+}
+
+
+def category_ceiling_status(category, cfg=None):
+    """
+    Soft monthly-ceiling status for a category, used as an APPROVE-TIME WARNING
+    (never a hard block).
+
+    Returns None when there's no ceiling to enforce (category has no ceiling
+    field, or the ceiling is unset/blank/0 -> check disabled). Otherwise a dict:
+        {category, ceiling, total, over}
+    where ``total`` is this calendar month's approved+paid payout total for the
+    category (by processed_at) and ``over`` is total > ceiling.
+    """
+    from django.db.models import Sum
+    from django.utils import timezone
+
+    from .models import SRPClaim, SRPConfig
+
+    cfg = cfg or SRPConfig.get()
+    cat = (category or "").strip().upper()
+
+    field = CATEGORY_CEILING_FIELDS.get(cat)
+    if not field:
+        return None
+
+    ceiling = getattr(cfg, field, None)
+    if not ceiling or ceiling <= 0:
+        return None  # unset/blank ceiling -> no check
+
+    now = timezone.now()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    total = (
+        SRPClaim.objects.filter(
+            category=cat,
+            status__in=[SRPClaim.Status.APPROVED, SRPClaim.Status.PAID],
+            processed_at__gte=month_start,
+        ).aggregate(s=Sum("payout_amount"))["s"]
+        or Decimal("0")
+    )
+
+    return {
+        "category": cat,
+        "ceiling": ceiling,
+        "total": total,
+        "over": total > ceiling,
+    }
+
 
 class CheckResult:
     """One auto-check outcome: a tri-state (plus INFO) + a human label."""

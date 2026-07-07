@@ -86,13 +86,41 @@ class SRPConfig(models.Model):
     """One-row configuration for ceilings and behavior."""
 
     monthly_ceiling_peacetime = models.DecimalField(
-        max_digits=20, decimal_places=2, default=0, validators=[MinValueValidator(0)]
+        max_digits=20,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(0)],
+        help_text=(
+            "Soft monthly ISK ceiling for Peacetime approvals. When approving a "
+            "claim would push this month's approved+paid Peacetime total over "
+            "this value, the reviewer sees a WARNING (never a hard block). "
+            "Leave 0/blank to disable the check."
+        ),
     )
     monthly_ceiling_strategic = models.DecimalField(
-        max_digits=20, decimal_places=2, default=0, validators=[MinValueValidator(0)]
+        max_digits=20,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(0)],
+        help_text=(
+            "Soft monthly ISK ceiling for Strategic approvals. When approving a "
+            "claim would push this month's approved+paid Strategic total over "
+            "this value, the reviewer sees a WARNING (never a hard block). "
+            "Leave 0/blank to disable the check."
+        ),
     )
     auto_calculate_payouts = models.BooleanField(default=True)
-    default_multiplier = models.DecimalField(max_digits=6, decimal_places=2, default=1)
+    default_multiplier = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=1,
+        help_text=(
+            "Global multiplier applied to every auto-calculated payout "
+            "(base ShipPayout value x this). 1.00 = no change. Only affects "
+            "recomputed (PENDING) claims; APPROVED/PAID amounts stay frozen and "
+            "MANUAL payouts are never scaled."
+        ),
+    )
     npc_damage_threshold = models.PositiveIntegerField(
         default=50,
         validators=[MinValueValidator(0)],
@@ -274,13 +302,23 @@ class SRPClaim(models.Model):
 
     def calculate_payout(self):
         """
-        Computes payout from ShipPayout + claim category.
-        (Manual is intentionally excluded; manual payout is reviewer-entered.)
+        Computes payout from ShipPayout + claim category, scaled by the
+        configured SRPConfig.default_multiplier (1.0 by default -> no change
+        for existing installs). Manual is intentionally excluded; manual payout
+        is reviewer-entered.
+
+        Freeze semantics are unaffected: this is only ever called on the
+        recompute paths (PENDING save, approval snapshot, reviewer edit), so
+        APPROVED/PAID amounts stay frozen and MANUAL is never auto-touched.
         """
         cat = self.canonical_category(self.category)
         if not self.ship:
             return 0
-        return self.ship.payout_for_category(cat) or 0
+        base = self.ship.payout_for_category(cat) or 0
+        multiplier = SRPConfig.get().default_multiplier
+        if multiplier is None:
+            multiplier = 1
+        return base * multiplier
 
     @property
     def needs_manual_payout(self) -> bool:
