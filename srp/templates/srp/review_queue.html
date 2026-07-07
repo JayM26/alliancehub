@@ -285,6 +285,15 @@
               {% elif c.check_non_tnt.is_na %}
                 <span class="badge text-bg-secondary" title="{{ c.check_non_tnt.label }}">TNT?</span>
               {% endif %}
+              {# Ownership (P1-4): "On behalf" (INFO, neutral) is the sanctioned
+                 reviewer-filed path; "Not owner" (WARN, danger) is a claim the
+                 submit gate would now block (legacy/rescinded-perm). Own losses
+                 and unresolved victims stay off the queue. #}
+              {% if c.check_ownership.is_warn %}
+                <span class="badge text-bg-danger" title="{{ c.check_ownership.label }}">Not owner</span>
+              {% elif c.check_ownership.is_info %}
+                <span class="badge text-bg-secondary" title="{{ c.check_ownership.label }}">On behalf</span>
+              {% endif %}
             </div>
           </td>
 

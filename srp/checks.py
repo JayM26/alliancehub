@@ -150,11 +150,98 @@ class CheckResult:
         return self.state in (self.INFO, self.NA)
 
     @property
+    def is_info(self) -> bool:
+        return self.state == self.INFO
+
+    @property
     def is_na(self) -> bool:
         return self.state == self.NA
 
     def __repr__(self):  # pragma: no cover - debug aid
         return f"CheckResult({self.state}, {self.label!r})"
+
+
+def submitter_character_ids(submitter) -> set[int]:
+    """
+    Every EVE character_id linked to a user — main + alts.
+
+    Ownership (P1-4) is "is the victim one of *my* characters", so an alt counts
+    exactly like the main. Pulls from ``User.main_character`` and the reverse
+    ``eve_characters`` relation (union; either can be present without the other).
+    """
+    ids: set[int] = set()
+    if submitter is None:
+        return ids
+
+    mc = getattr(submitter, "main_character", None)
+    if mc is not None and getattr(mc, "character_id", None):
+        ids.add(int(mc.character_id))
+
+    manager = getattr(submitter, "eve_characters", None)
+    if manager is not None:
+        for ch in manager.all():
+            if ch.character_id:
+                ids.add(int(ch.character_id))
+
+    return ids
+
+
+def ownership_check(claim, submitter=None) -> CheckResult:
+    """
+    Does the killmail victim belong to the claim's submitter? (P1-4)
+
+    One helper serves both the submission gate and the review-time signal:
+
+      - victim unknown (ESI didn't resolve ``victim_character_id``) -> NA
+        ("not verifiable"). UNCOMPUTABLE — submission is NOT blocked (graceful
+        degradation, a project rule); never a false-clean.
+      - victim is one of the submitter's linked characters -> CLEAN ("Own loss").
+      - victim is NOT theirs and the submitter is a REVIEWER -> INFO
+        ("Filed on behalf"). A sanctioned FC/logi escape hatch — neutral info,
+        not a warning.
+      - victim is NOT theirs and the submitter is a regular member -> WARN
+        (renders danger). The fraud vector: filing someone else's loss. The
+        submit path blocks on this; a stored WARN means a legacy/rescinded-perm
+        claim a reviewer should look at.
+
+    The reviewer distinction (INFO vs WARN) is derived from the
+    ``srp.can_review_srp`` permission at call time — nothing is stored, so it's
+    always current.
+    """
+    submitter = submitter or claim.submitter
+
+    victim_id = claim.victim_character_id
+    if not victim_id:
+        return CheckResult(CheckResult.NA, "Ownership: not verifiable")
+
+    if int(victim_id) in submitter_character_ids(submitter):
+        return CheckResult(CheckResult.CLEAN, "Own loss")
+
+    victim = claim.victim_character_name or f"character #{victim_id}"
+    is_reviewer = bool(submitter and submitter.has_perm("srp.can_review_srp"))
+    if is_reviewer:
+        return CheckResult(CheckResult.INFO, f"Filed on behalf ({victim})")
+    return CheckResult(
+        CheckResult.WARN, f"Not submitter's character ({victim})", warn_class="danger"
+    )
+
+
+def ownership_reject_message(claim) -> str:
+    """
+    Form-error copy shown when a regular member files a loss that isn't theirs.
+    Names the actual victim and points them at the character-link flow.
+    """
+    if claim.victim_character_name:
+        victim = claim.victim_character_name
+    elif claim.victim_character_id:
+        victim = f"character #{claim.victim_character_id}"
+    else:  # pragma: no cover - gate only fires when the victim is known
+        victim = "the killmail victim"
+    return (
+        f"This killmail's victim is {victim}, which isn't one of your linked EVE "
+        f"characters — you can only file SRP for your own losses. If {victim} is "
+        f"yours, link it to your account first (Add Character), then resubmit."
+    )
 
 
 def _int_set(values) -> set[int]:
@@ -194,20 +281,32 @@ def blue_check(claim, cfg) -> CheckResult:
     return CheckResult(CheckResult.CLEAN, "No blues detected")
 
 
-def corp_mismatch_check(claim) -> CheckResult:
+def corp_mismatch_check(claim, submitter=None) -> CheckResult:
     """
     Submitter corp vs victim corp.
 
     NA when either side's corp id is unknown (no linked main character, or ESI
     victim corp missing) — the check simply can't run, which must NOT read as a
     green "corps match".
+
+    Post-P1-4: if the victim is one of the submitter's OWN linked characters, a
+    corp "mismatch" just means the loss was on an alt in a different corp than
+    the main — that is NOT a fraud signal and must not false-positive. Ownership
+    (ownership_check) is the real integrity check now, so an own-character loss
+    reads CLEAN here regardless of corp.
     """
+    submitter = submitter or claim.submitter
+
+    victim_char_id = claim.victim_character_id
+    if victim_char_id and int(victim_char_id) in submitter_character_ids(submitter):
+        return CheckResult(CheckResult.CLEAN, "Submitter's own character")
+
     km = claim.killmail_raw or {}
     victim = km.get("victim") or {}
     victim_corp_id = victim.get("corporation_id")
 
     submitter_corp_id = None
-    mc = getattr(claim.submitter, "main_character", None)
+    mc = getattr(submitter, "main_character", None)
     if mc:
         submitter_corp_id = getattr(mc, "corporation_id", None)
 
@@ -324,4 +423,5 @@ def claim_auto_checks(claim, cfg) -> dict[str, CheckResult]:
         "corp": corp_mismatch_check(claim),
         "non_tnt": non_tnt_check(claim, cfg),
         "npc": npc_check(claim, cfg),
+        "ownership": ownership_check(claim),
     }

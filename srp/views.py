@@ -47,6 +47,8 @@ from .checks import (
     approve_block_reason,
     category_ceiling_status,
     claim_auto_checks,
+    ownership_check,
+    ownership_reject_message,
 )
 from .esi import fetch_type_name, get_type_names_cached, populate_claim_from_esi
 from .fit_importer import import_eft_fit
@@ -101,11 +103,32 @@ def submit_claim(request):
             claim = form.save(commit=False)
             claim.submitter = request.user
             claim.character_name = request.user.username
-            claim.save()
 
-            # Best-effort ESI enrichment (never block submission).
+            # Best-effort ESI enrichment (never block submission on an ESI
+            # *failure*). The claim is not persisted until after the ownership
+            # gate below, so a rejected submission leaves no row behind; an ESI
+            # exception is captured and surfaced, but still saves the claim.
+            ok = False
+            esi_error = None
             try:
                 ok = populate_claim_from_esi(claim)
+
+                # Ownership gate (P1-4): the killmail victim must be one of the
+                # submitter's linked characters. Runs on the ESI-resolved victim,
+                # BEFORE we persist or create ship rows. ownership_check derives
+                # the outcome so this view just orchestrates:
+                #   - own loss / reviewer-on-behalf / unresolved victim -> passes
+                #   - regular member filing someone else's loss (WARN) -> reject
+                #     with a form error naming the victim (not a 500, not a
+                #     silent save). Reviewer-on-behalf is INFO (not WARN), so a
+                #     reviewer is never blocked; it's surfaced at review time.
+                ownership = ownership_check(claim, request.user)
+                if ownership.is_warn:
+                    form.add_error(None, ownership_reject_message(claim))
+                    messages.error(request, "Please correct the errors below.")
+                    return render(
+                        request, "srp/submit_claim.html", {"form": form}
+                    )
 
                 # If we have a ship_type_id but ship_name didn't resolve, try once more.
                 if claim.ship_type_id and not claim.ship_name:
@@ -127,24 +150,28 @@ def submit_claim(request):
                 # Optional: backfill legacy system field for display/search.
                 if claim.solar_system_name and not claim.system:
                     claim.system = claim.solar_system_name
-
-                claim.save()
-
-                if ok:
-                    messages.success(
-                        request,
-                        f"Your SRP claim has been submitted. ESI pull OK: {claim.ship_name or 'Unknown ship'}"
-                        f"{' in ' + claim.solar_system_name if claim.solar_system_name else ''}.",
-                    )
-                else:
-                    messages.warning(
-                        request,
-                        "Your SRP claim has been submitted, but the link didn't look like an ESI killmail URL (missing /killmails/<id>/<hash>/).",
-                    )
             except Exception as e:
+                esi_error = e
+
+            # Persist once, after the ownership gate. Graceful degradation: an
+            # ESI failure (or unresolved victim) still saves the claim.
+            claim.save()
+
+            if esi_error is not None:
                 messages.warning(
                     request,
-                    f"Your SRP claim has been submitted, but ESI pull failed: {e}",
+                    f"Your SRP claim has been submitted, but ESI pull failed: {esi_error}",
+                )
+            elif ok:
+                messages.success(
+                    request,
+                    f"Your SRP claim has been submitted. ESI pull OK: {claim.ship_name or 'Unknown ship'}"
+                    f"{' in ' + claim.solar_system_name if claim.solar_system_name else ''}.",
+                )
+            else:
+                messages.warning(
+                    request,
+                    "Your SRP claim has been submitted, but the link didn't look like an ESI killmail URL (missing /killmails/<id>/<hash>/).",
                 )
 
             # Precompute the fit check so the review-queue badge is populated
@@ -237,6 +264,10 @@ def review_queue(request):
         c.check_blue = checks["blue"]
         c.check_corp = checks["corp"]
         c.check_non_tnt = checks["non_tnt"]
+        # Ownership (P1-4): INFO "filed on behalf" when a reviewer filed for
+        # someone else (sanctioned); WARN only for a legacy/rescinded-perm claim
+        # the submit gate would now block; NA when the victim is unresolved.
+        c.check_ownership = checks["ownership"]
         # NPC involvement, gated by SRPConfig.npc_damage_threshold. WARN only
         # when NPC-only or NPC damage >= threshold; below-threshold involvement
         # renders as neutral info (carries the %), never a bare binary alarm.
@@ -767,6 +798,7 @@ def claim_detail(request, claim_id: int):
     check_corp = checks["corp"]
     check_non_tnt = checks["non_tnt"]
     check_npc = checks["npc"]
+    check_ownership = checks["ownership"]
 
     # ------------------------------------------------------------------
     # Fitting grouping (slots, ammo filtered)
@@ -945,6 +977,7 @@ def claim_detail(request, claim_id: int):
             "check_corp": check_corp,
             "check_non_tnt": check_non_tnt,
             "check_npc": check_npc,
+            "check_ownership": check_ownership,
             # Back-compat booleans (summary card warning badges)
             "blue_involved": check_blue.is_warn,
             "corp_mismatch": check_corp.is_warn,

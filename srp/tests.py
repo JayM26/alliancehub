@@ -25,6 +25,8 @@ from .checks import (
     corp_mismatch_check,
     non_tnt_check,
     npc_check,
+    ownership_check,
+    submitter_character_ids,
 )
 from .models import ClaimReview, ShipPayout, SRPClaim, SRPConfig
 
@@ -906,3 +908,254 @@ class SRPFitcheckPrecomputeTests(TestCase):
         )
         self.assertEqual(claim.fitcheck_best_fit_id, fit.id)
         self.assertIsNotNone(claim.fitcheck_updated_at)
+
+
+# ---------------------------------------------------------------------------
+# P1-4 — Ownership check on claim submission + review-time signal.
+#
+# No live ESI: populate_claim_from_esi is patched to set the resolved victim on
+# the claim, exactly as the real ESI pull would. Covers the four required cases:
+# member files own loss (accepted), member files someone else's (rejected),
+# reviewer files on behalf (accepted + INFO), ESI-unknown victim (accepted + NA).
+# ---------------------------------------------------------------------------
+from unittest import mock  # noqa: E402
+
+
+def _fake_esi(victim_id=None, victim_name=None, ok=True):
+    """A populate_claim_from_esi stand-in: sets the victim the way ESI would."""
+
+    def _inner(claim):
+        claim.killmail_id = 999001
+        claim.killmail_hash = "deadbeef"
+        victim_blob = {}
+        if victim_id is not None:
+            victim_blob["character_id"] = victim_id
+        claim.killmail_raw = {"victim": victim_blob, "attackers": []}
+        claim.victim_character_id = victim_id
+        claim.victim_character_name = victim_name
+        return ok
+
+    return _inner
+
+
+class SRPOwnershipCheckHelperTests(TestCase):
+    """Unit-level: ownership_check tri-state + the alt corp false-positive fix."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="pilot", password="x")
+
+    def _char(self, user, character_id, corp_id=None):
+        from eve_sso.models import EveCharacter
+
+        return EveCharacter.objects.create(
+            user=user,
+            character_id=character_id,
+            character_name=f"Char{character_id}",
+            corporation_id=corp_id,
+        )
+
+    def _reload(self):
+        return SRPClaim.objects.select_related(
+            "submitter", "submitter__main_character"
+        )
+
+    def _claim(self, victim_id=None, victim_name=None, corp_id=None):
+        km = {"victim": {}, "attackers": []}
+        if corp_id is not None:
+            km["victim"]["corporation_id"] = corp_id
+        return SRPClaim.objects.create(
+            submitter=self.user,
+            character_name="Pilot",
+            category="STRATEGIC",
+            status="PENDING",
+            broadcast_text="op",
+            esi_link="https://esi.evetech.net/latest/killmails/1/abc/",
+            killmail_raw=km,
+            victim_character_id=victim_id,
+            victim_character_name=victim_name,
+        )
+
+    def test_unknown_victim_is_na_sentinel(self):
+        claim = self._claim(victim_id=None)
+        res = ownership_check(claim)
+        self.assertEqual(res.state, CheckResult.NA)
+        self.assertEqual(res.badge_class, "secondary")  # neutral, NOT green
+        self.assertIn("not verifiable", res.label.lower())
+
+    def test_victim_is_own_main_is_clean(self):
+        self._char(self.user, character_id=1001)
+        self.user.main_character = self.user.eve_characters.first()
+        self.user.save()
+        claim = self._claim(victim_id=1001)
+        claim = self._reload().get(id=claim.id)
+        res = ownership_check(claim)
+        self.assertEqual(res.state, CheckResult.CLEAN)
+
+    def test_victim_is_own_alt_is_clean(self):
+        self._char(self.user, character_id=1001, corp_id=100)  # main
+        self.user.main_character = self.user.eve_characters.first()
+        self.user.save()
+        self._char(self.user, character_id=1002, corp_id=200)  # alt in another corp
+        claim = self._claim(victim_id=1002)
+        claim = self._reload().get(id=claim.id)
+        res = ownership_check(claim)
+        self.assertEqual(res.state, CheckResult.CLEAN)
+
+    def test_member_files_others_loss_is_warn(self):
+        self._char(self.user, character_id=1001)
+        claim = self._claim(victim_id=2002, victim_name="SomeoneElse")
+        claim = self._reload().get(id=claim.id)
+        res = ownership_check(claim)
+        self.assertEqual(res.state, CheckResult.WARN)
+        self.assertEqual(res.badge_class, "danger")
+        self.assertIn("SomeoneElse", res.label)
+
+    def test_reviewer_files_others_loss_is_info_on_behalf(self):
+        from django.contrib.auth.models import Permission
+
+        perm = Permission.objects.get(
+            content_type__app_label="srp", codename="can_review_srp"
+        )
+        self.user.user_permissions.add(perm)
+        self.user = User.objects.get(id=self.user.id)  # drop the perm cache
+        self._char(self.user, character_id=1001)
+        claim = self._claim(victim_id=2002, victim_name="FleetMate")
+        claim = self._reload().get(id=claim.id)
+        res = ownership_check(claim)
+        self.assertEqual(res.state, CheckResult.INFO)
+        self.assertTrue(res.is_info)
+        self.assertIn("behalf", res.label.lower())
+
+    def test_submitter_character_ids_unions_main_and_alts(self):
+        self._char(self.user, character_id=1001)
+        self.user.main_character = self.user.eve_characters.first()
+        self.user.save()
+        self._char(self.user, character_id=1002)
+        self.assertEqual(submitter_character_ids(self.user), {1001, 1002})
+
+    # -- corp-mismatch no longer false-positives on a legit alt ----------
+    def test_corp_check_own_alt_is_clean_not_mismatch(self):
+        self._char(self.user, character_id=1001, corp_id=100)  # main in corp 100
+        self.user.main_character = self.user.eve_characters.first()
+        self.user.save()
+        self._char(self.user, character_id=1002, corp_id=200)  # alt in corp 200
+        # Victim is the alt (corp 200) while the main is corp 100 — pre-fix this
+        # read as a corp mismatch WARN; now it's a clean own-character loss.
+        claim = self._claim(victim_id=1002, corp_id=200)
+        claim = self._reload().get(id=claim.id)
+        res = corp_mismatch_check(claim)
+        self.assertEqual(res.state, CheckResult.CLEAN)
+
+    def test_corp_check_still_warns_on_genuine_cross_corp(self):
+        # Victim is NOT the submitter's character and is in a different corp.
+        self._char(self.user, character_id=1001, corp_id=100)
+        self.user.main_character = self.user.eve_characters.first()
+        self.user.save()
+        claim = self._claim(victim_id=2002, corp_id=200)
+        claim = self._reload().get(id=claim.id)
+        res = corp_mismatch_check(claim)
+        self.assertEqual(res.state, CheckResult.WARN)
+
+
+class SRPOwnershipSubmitTests(TestCase):
+    """
+    End-to-end submit gate (P1-4). populate_claim_from_esi is patched — no live
+    ESI. The gate must block a member filing another pilot's loss (form error,
+    no row) while accepting own losses, reviewer-on-behalf, and unresolved
+    victims (graceful degradation).
+    """
+
+    def setUp(self):
+        cfg = SRPConfig.get()
+        cfg.auto_calculate_payouts = True
+        cfg.save()
+        self.user = User.objects.create_user(username="pilot", password="x")
+
+    def _char(self, user, character_id):
+        from eve_sso.models import EveCharacter
+
+        ch = EveCharacter.objects.create(
+            user=user,
+            character_id=character_id,
+            character_name=f"Char{character_id}",
+        )
+        user.main_character = ch
+        user.save()
+        return ch
+
+    def _post(self, category="SHITSTACK"):
+        return self.client.post(
+            "/srp/submit/",
+            {
+                "esi_link": (
+                    "https://esi.evetech.net/latest/killmails/999001/deadbeef/"
+                    "?datasource=tranquility"
+                ),
+                "category": category,
+                "broadcast_text": "",
+            },
+        )
+
+    def test_member_submits_own_loss_accepted(self):
+        self._char(self.user, character_id=1001)
+        self.client.force_login(self.user)
+        with mock.patch(
+            "srp.views.populate_claim_from_esi", _fake_esi(victim_id=1001)
+        ):
+            resp = self._post()
+        self.assertEqual(resp.status_code, 302)  # redirect to my_claims
+        self.assertEqual(SRPClaim.objects.count(), 1)
+        claim = SRPClaim.objects.get()
+        self.assertEqual(claim.submitter_id, self.user.id)
+        self.assertEqual(ownership_check(claim).state, CheckResult.CLEAN)
+
+    def test_member_submits_others_loss_rejected(self):
+        self._char(self.user, character_id=1001)
+        self.client.force_login(self.user)
+        with mock.patch(
+            "srp.views.populate_claim_from_esi",
+            _fake_esi(victim_id=2002, victim_name="VictimPilot"),
+        ):
+            resp = self._post()
+        # Re-render with a form error, NOT a redirect, and NOTHING persisted.
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(SRPClaim.objects.count(), 0)
+        self.assertTrue(resp.context["form"].errors)
+        self.assertContains(resp, "VictimPilot")
+
+    def test_reviewer_files_on_behalf_accepted_and_info(self):
+        from django.contrib.auth.models import Permission
+
+        perm = Permission.objects.get(
+            content_type__app_label="srp", codename="can_review_srp"
+        )
+        self.user.user_permissions.add(perm)
+        self._char(self.user, character_id=1001)
+        self.client.force_login(self.user)
+        with mock.patch(
+            "srp.views.populate_claim_from_esi",
+            _fake_esi(victim_id=2002, victim_name="FleetMate"),
+        ):
+            resp = self._post()
+        self.assertEqual(resp.status_code, 302)  # accepted
+        self.assertEqual(SRPClaim.objects.count(), 1)
+        claim = SRPClaim.objects.select_related(
+            "submitter", "submitter__main_character"
+        ).get()
+        res = ownership_check(claim)
+        self.assertEqual(res.state, CheckResult.INFO)
+        self.assertIn("behalf", res.label.lower())
+
+    def test_esi_unknown_victim_accepted_with_na_sentinel(self):
+        self._char(self.user, character_id=1001)
+        self.client.force_login(self.user)
+        with mock.patch(
+            "srp.views.populate_claim_from_esi",
+            _fake_esi(victim_id=None, ok=True),
+        ):
+            resp = self._post()
+        self.assertEqual(resp.status_code, 302)  # not blocked — graceful
+        self.assertEqual(SRPClaim.objects.count(), 1)
+        claim = SRPClaim.objects.get()
+        res = ownership_check(claim)
+        self.assertEqual(res.state, CheckResult.NA)
