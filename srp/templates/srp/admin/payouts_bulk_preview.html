@@ -79,25 +79,40 @@
                     </td>
 
                     <td>
-                    {% if r.action == "CREATE" %}
-                        <span class="text-secondary small">
-                        New record: {{ r.new.strategic|floatformat:0|intcomma }},
-                        {{ r.new.peacetime|floatformat:0|intcomma }},
-                        {{ r.new.shitstack|floatformat:0|intcomma }},
-                        {{ r.new.tnt_special|floatformat:0|intcomma }},
-                        hull={{ r.new.hull_contract }}
-                        </span>
-                    {% else %}
+                        {# Every tier shown, so the reviewer sees changed vs.
+                           deliberately-unchanged. A tier whose column is missing
+                           or blank is marked "unchanged" and left as-is —
+                           never silently overwritten to 0. #}
                         <div class="small">
-                        {% for d in r.diffs %}
+                        {% for t in r.tiers %}
                             <div>
-                            <span class="text-secondary">{{ d.field }}</span>:
-                            <span class="text-secondary">{{ d.old }}</span>
-                            → <strong>{{ d.new }}</strong>
+                            <span class="text-secondary">{{ t.field }}</span>:
+                            {% if t.unchanged %}
+                                <span class="text-secondary">{{ t.new|floatformat:0|intcomma }}</span>
+                                <span class="badge text-bg-secondary">unchanged</span>
+                            {% else %}
+                                {% if r.action != "CREATE" %}
+                                    <span class="text-secondary">{{ t.old|floatformat:0|intcomma }}</span> →
+                                {% endif %}
+                                <strong>{{ t.new|floatformat:0|intcomma }}</strong>
+                                <span class="badge text-bg-warning">{% if r.action == "CREATE" %}set{% else %}changed{% endif %}</span>
+                            {% endif %}
                             </div>
                         {% endfor %}
+                            <div>
+                            <span class="text-secondary">Hull contract</span>:
+                            {% if r.hull.unchanged %}
+                                <span class="text-secondary">{{ r.hull.new }}</span>
+                                <span class="badge text-bg-secondary">unchanged</span>
+                            {% else %}
+                                {% if r.action != "CREATE" %}
+                                    <span class="text-secondary">{{ r.hull.old }}</span> →
+                                {% endif %}
+                                <strong>{{ r.hull.new }}</strong>
+                                <span class="badge text-bg-warning">{% if r.action == "CREATE" %}set{% else %}changed{% endif %}</span>
+                            {% endif %}
+                            </div>
                         </div>
-                    {% endif %}
                     </td>
                 </tr>
                 {% endif %}

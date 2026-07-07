@@ -493,3 +493,86 @@ class SRPMultiplierCeilingTests(TestCase):
         r = category_ceiling_status("PEACETIME", cfg)
         self.assertEqual(r["total"], M100)
         self.assertTrue(r["over"])
+
+
+# ---------------------------------------------------------------------------
+# A4 — CSV importer no longer silently zeroes tiers.
+# ---------------------------------------------------------------------------
+class SRPBulkImportTests(TestCase):
+    """
+    Following the app's own (previously wrong) instructions must not overwrite
+    payout tiers with 0: header matching is case-insensitive/trimmed, a MISSING
+    column leaves that tier unchanged, and an explicit 0 still sets 0.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser(
+            username="boss", password="x", email="boss@example.com"
+        )
+        self.client.force_login(self.admin)
+
+    def _job(self, csv_text):
+        from .models import PayoutImportJob
+
+        return PayoutImportJob.objects.create(
+            created_by=self.admin, csv_text=csv_text, original_filename="t.csv"
+        )
+
+    def _apply(self, job):
+        return self.client.post(
+            "/srp/admin/payouts/bulk/apply/", {"job_id": job.id}
+        )
+
+    def test_missing_tier_column_leaves_tier_unchanged(self):
+        ship = ShipPayout.objects.create(
+            ship_name="Rifter",
+            strategic=M100,
+            peacetime=M100,
+            shitstack=M100,
+            tnt_special=M100,
+        )
+        # Lowercase headers; only Strategic present (Peacetime/Shitstack/TNT omitted).
+        self._apply(self._job("ship name,strategic\nRifter,200000000\n"))
+        ship.refresh_from_db()
+        self.assertEqual(ship.strategic, M200)  # case-insensitive header matched
+        self.assertEqual(ship.peacetime, M100)  # missing column -> unchanged
+        self.assertEqual(ship.shitstack, M100)  # missing column -> unchanged
+        self.assertEqual(ship.tnt_special, M100)  # missing column -> unchanged
+
+    def test_explicit_zero_sets_zero(self):
+        ship = ShipPayout.objects.create(ship_name="Rifter", strategic=M100)
+        self._apply(self._job("Ship Name,Strategic\nRifter,0\n"))
+        ship.refresh_from_db()
+        self.assertEqual(ship.strategic, Decimal("0"))  # deliberate zeroing works
+
+    def test_blank_cell_leaves_unchanged(self):
+        ship = ShipPayout.objects.create(ship_name="Rifter", strategic=M100)
+        self._apply(self._job("Ship Name,Strategic\nRifter,\n"))
+        ship.refresh_from_db()
+        self.assertEqual(ship.strategic, M100)  # blank cell -> unchanged, not 0
+
+    def test_tnt_special_column_applied_case_insensitive(self):
+        ship = ShipPayout.objects.create(ship_name="Rifter", tnt_special=M100)
+        self._apply(self._job("Ship Name,tnt special\nRifter,200000000\n"))
+        ship.refresh_from_db()
+        self.assertEqual(ship.tnt_special, M200)
+
+    def test_create_absent_tiers_default_zero(self):
+        self._apply(self._job("Ship Name,Strategic\nNewHull,300000000\n"))
+        s = ShipPayout.objects.get(ship_name="NewHull")
+        self.assertEqual(s.strategic, Decimal("300000000"))
+        self.assertEqual(s.peacetime, Decimal("0"))
+        self.assertEqual(s.tnt_special, Decimal("0"))
+
+    def test_preview_marks_unchanged_and_changed(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        ShipPayout.objects.create(ship_name="Rifter", strategic=M100, tnt_special=M100)
+        f = SimpleUploadedFile(
+            "p.csv", b"Ship Name,Strategic\nRifter,200000000\n", content_type="text/csv"
+        )
+        r = self.client.post("/srp/admin/payouts/bulk/", {"file": f})
+        self.assertEqual(r.status_code, 200)
+        html = r.content.decode()
+        self.assertIn("unchanged", html)  # tnt_special/peacetime left alone
+        self.assertIn("changed", html)  # strategic changed

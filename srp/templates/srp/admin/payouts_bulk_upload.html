@@ -21,8 +21,14 @@
       <input class="form-control form-control-sm" type="file" name="file" accept=".csv">
 
       <div class="text-secondary small">
-        Expected columns: <code>Ship Name</code>, <code>Strategic</code>, <code>Peacetime</code>, <code>Shit Stack</code>, <code>HullContract</code>.
-        Extra columns are ignored.
+        Columns (header matching is case-insensitive and ignores surrounding spaces):
+        <code>Ship Name</code>, <code>Strategic</code>, <code>Peacetime</code>,
+        <code>Shit Stack</code>, <code>TNT Special</code>, <code>Capital</code> /
+        <code>HullContract</code>. Extra columns are ignored.
+        <br>
+        A <strong>missing</strong> tier column leaves that tier unchanged — it is
+        never overwritten with 0. To deliberately zero a tier, include the column
+        with a value of <code>0</code>. Review the per-tier preview before applying.
       </div>
 
       <div class="d-flex gap-2">

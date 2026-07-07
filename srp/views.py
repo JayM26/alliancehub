@@ -1152,6 +1152,76 @@ def _get_cell(row: dict, key: str):
     return None
 
 
+# Payout tier -> its documented CSV header. Header matching is case-insensitive
+# and whitespace-trimmed (see _present_headers), so "strategic", " Strategic "
+# and "STRATEGIC" all map here.
+TIER_COLUMNS = [
+    ("strategic", "Strategic"),
+    ("peacetime", "Peacetime"),
+    ("shitstack", "Shit Stack"),
+    ("tnt_special", "TNT Special"),
+]
+
+
+def _present_headers(reader: csv.DictReader) -> set[str]:
+    """Normalized (trimmed, lowercased) set of headers actually in the CSV."""
+    return {(h or "").strip().lower() for h in (reader.fieldnames or [])}
+
+
+def _parse_isk_optional(value) -> Decimal | None:
+    """
+    Like _parse_isk, but returns None for "no value provided" so a missing or
+    blank cell means "leave this tier UNCHANGED", never silently zero it. An
+    explicit "0" in a provided column parses to Decimal(0) (deliberate zeroing
+    stays possible).
+    """
+    if value is None:
+        return None
+    s = str(value).strip().replace("\xa0", " ")
+    if not s:
+        return None
+    m = re.search(r"[\d,]+", s)
+    if not m:
+        return None
+    return Decimal(m.group(0).replace(",", ""))
+
+
+def _parse_hull_optional(row: dict, present: set[str]) -> bool | None:
+    """
+    hull_contract from the Capital/HullContract columns. Returns None when
+    NEITHER column is present, so an import that omits them leaves the existing
+    flag untouched instead of forcing it False.
+    """
+    if "capital" not in present and "hullcontract" not in present:
+        return None
+    return _parse_bool(_get_cell(row, "Capital")) or _parse_bool(
+        _get_cell(row, "HullContract")
+    )
+
+
+def _parse_payout_row(row: dict, present: set[str]):
+    """
+    Parse one CSV row into (ship_name, tiers, hull).
+
+    ``tiers`` maps model field -> Decimal or None, where None means "column
+    absent or blank -> leave unchanged". ``hull`` is bool or None (unchanged).
+    Shared by the preview and apply steps so they can't diverge.
+    """
+    ship_name = (
+        _get_cell(row, "Ship Name") or _get_cell(row, "ship_name") or ""
+    ).strip()
+
+    tiers: dict[str, Decimal | None] = {}
+    for field, header in TIER_COLUMNS:
+        if header.strip().lower() in present:
+            tiers[field] = _parse_isk_optional(_get_cell(row, header))
+        else:
+            tiers[field] = None  # column not in the file -> unchanged
+
+    hull = _parse_hull_optional(row, present)
+    return ship_name, tiers, hull
+
+
 @login_required
 @permission_required("srp.can_manage_srp_payouts", raise_exception=True)
 def admin_payouts_bulk(request):
@@ -1175,64 +1245,77 @@ def admin_payouts_bulk(request):
     )
 
     reader = csv.DictReader(io.StringIO(job.csv_text))
+    present = _present_headers(reader)
     preview_rows: list[dict[str, Any]] = []
     errors: list[str] = []
 
     for i, row in enumerate(reader):
-        ship_name = (row.get("Ship Name") or row.get("ship_name") or "").strip()
+        ship_name, tiers, hull = _parse_payout_row(row, present)
         if not ship_name:
             errors.append(f"Row {i+2}: missing Ship Name")
             continue
 
-        strategic = _parse_isk(row.get("Strategic"))
-        peacetime = _parse_isk(row.get("Peacetime"))
-        shitstack = _parse_isk(row.get("Shit Stack"))
-        tnt_special = _parse_isk(row.get("TNT Special"))
-        capital_flag = _parse_bool(_get_cell(row, "Capital"))
-        hull_contract = capital_flag or _parse_bool(_get_cell(row, "HullContract"))
-
         existing = ShipPayout.objects.filter(ship_name__iexact=ship_name).first()
-        if not existing:
-            preview_rows.append(
+        creating = existing is None
+
+        # Per-tier breakdown so the reviewer sees exactly what changes vs. what
+        # is deliberately left alone. A missing/blank column shows as
+        # "unchanged", never a silent overwrite to 0.
+        tier_rows: list[dict[str, Any]] = []
+        any_change = False
+        for field, header in TIER_COLUMNS:
+            val = tiers[field]
+            old = getattr(existing, field) if existing else None
+            provided = val is not None
+            if not provided:
+                # Column absent/blank -> keep existing (or model default on create).
+                new = old if existing else Decimal("0")
+                unchanged = True
+            else:
+                new = val
+                unchanged = (not creating) and (old == val)
+                if not unchanged:
+                    any_change = True
+            tier_rows.append(
                 {
-                    "ship_name": ship_name,
-                    "action": "CREATE",
-                    "new": {
-                        "strategic": strategic,
-                        "peacetime": peacetime,
-                        "shitstack": shitstack,
-                        "tnt_special": tnt_special,
-                        "hull_contract": hull_contract,
-                    },
-                    "diffs": [],
+                    "field": header,
+                    "old": old,
+                    "new": new,
+                    "provided": provided,
+                    "unchanged": unchanged,
                 }
             )
-            continue
 
-        diffs: list[dict[str, Any]] = []
+        # hull_contract row.
+        hull_old = existing.hull_contract if existing else None
+        hull_provided = hull is not None
+        if not hull_provided:
+            hull_new = hull_old if existing else False
+            hull_unchanged = True
+        else:
+            hull_new = hull
+            hull_unchanged = (not creating) and (hull_old == hull)
+            if not hull_unchanged:
+                any_change = True
 
-        def _diff(field: str, old, new) -> None:
-            if old != new:
-                diffs.append({"field": field, "old": old, "new": new})
-
-        _diff("strategic", existing.strategic, strategic)
-        _diff("peacetime", existing.peacetime, peacetime)
-        _diff("shitstack", existing.shitstack, shitstack)
-        _diff("tnt_special", existing.tnt_special, tnt_special)
-        _diff("hull_contract", existing.hull_contract, hull_contract)
+        if creating:
+            action = "CREATE"
+        elif any_change:
+            action = "UPDATE"
+        else:
+            action = "NO_CHANGE"
 
         preview_rows.append(
             {
                 "ship_name": ship_name,
-                "action": "UPDATE" if diffs else "NO_CHANGE",
-                "new": {
-                    "strategic": strategic,
-                    "peacetime": peacetime,
-                    "shitstack": shitstack,
-                    "tnt_special": tnt_special,
-                    "hull_contract": hull_contract,
+                "action": action,
+                "tiers": tier_rows,
+                "hull": {
+                    "old": hull_old,
+                    "new": hull_new,
+                    "provided": hull_provided,
+                    "unchanged": hull_unchanged,
                 },
-                "diffs": diffs,
             }
         )
 
@@ -1272,12 +1355,13 @@ def admin_payouts_bulk_apply(request):
     }
 
     reader = csv.DictReader(io.StringIO(job.csv_text))
+    present = _present_headers(reader)
 
     created = updated = skipped = errors = 0
 
     with transaction.atomic():
         for row in reader:
-            ship_name = (row.get("Ship Name") or row.get("ship_name") or "").strip()
+            ship_name, tiers, hull = _parse_payout_row(row, present)
             if not ship_name:
                 errors += 1
                 continue
@@ -1286,22 +1370,22 @@ def admin_payouts_bulk_apply(request):
                 skipped += 1
                 continue
 
-            capital_flag = _parse_bool(_get_cell(row, "Capital"))
-            hull_contract = capital_flag or _parse_bool(_get_cell(row, "HullContract"))
+            obj = ShipPayout.objects.filter(ship_name__iexact=ship_name).first()
+            creating = obj is None
+            if creating:
+                obj = ShipPayout(ship_name=ship_name)
 
-            defaults = {
-                "strategic": _parse_isk(row.get("Strategic")),
-                "peacetime": _parse_isk(row.get("Peacetime")),
-                "shitstack": _parse_isk(row.get("Shit Stack")),
-                "tnt_special": _parse_isk(row.get("TNT Special")),
-                "hull_contract": hull_contract,
-            }
+            # Only write tiers that were actually provided; None means "leave
+            # unchanged" (existing value on update, model default on create).
+            for field, _header in TIER_COLUMNS:
+                val = tiers[field]
+                if val is not None:
+                    setattr(obj, field, val)
+            if hull is not None:
+                obj.hull_contract = hull
 
-            _, was_created = ShipPayout.objects.update_or_create(
-                ship_name=ship_name,
-                defaults=defaults,
-            )
-            if was_created:
+            obj.save()
+            if creating:
                 created += 1
             else:
                 updated += 1
