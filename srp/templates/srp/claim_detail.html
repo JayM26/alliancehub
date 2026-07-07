@@ -254,6 +254,13 @@
                 </div>
               </div>
             </form>
+          {% elif edit_locked %}
+            <hr class="border-secondary"/>
+            <strong>Edit Claim</strong>
+            <div class="text-secondary small mt-2">
+              This claim is <strong>{{ claim.get_status_display }}</strong> — its payout is
+              frozen. Un-approve or un-pay it back to Pending to edit the category or amount.
+            </div>
           {% endif %}
 
           <strong>Actions</strong>

@@ -731,52 +731,79 @@ def claim_detail(request, claim_id: int):
     npc_present = check_npc.npc_present
 
     # ------------------------------------------------------------------
-    # Reviewer edit form
+    # Reviewer edit form — allowed ONLY while the claim is PENDING (B0 / P2-4).
+    #
+    # Once a claim is APPROVED/PAID (or DENIED) its payout_amount is FROZEN
+    # (P0-1). The edit path recomputes non-Manual payouts via calculate_payout(),
+    # which since A3 applies SRPConfig.default_multiplier — so editing a frozen
+    # claim would RE-SCALE money that's already been approved/paid, and a Manual
+    # edit would overwrite the frozen hand-entered amount. Guard it server-side
+    # (not just in the template): the form is only offered while PENDING, and an
+    # edit POST on a non-PENDING claim is rejected with a clear message. To
+    # change a processed claim the reviewer must un-approve/un-pay it back to
+    # Pending first (those reversal transitions exist since P0-3).
     # ------------------------------------------------------------------
     edit_form = None
+    edit_locked = is_reviewer and claim.status != SRPClaim.Status.PENDING
     if is_reviewer:
-        if request.method == "POST" and request.POST.get("edit_claim") == "1":
-            old_category = claim.category
-            old_payout = claim.payout_amount
+        is_edit_post = (
+            request.method == "POST" and request.POST.get("edit_claim") == "1"
+        )
 
-            edit_form = SRPClaimReviewerEditForm(request.POST, instance=claim)
-            if edit_form.is_valid():
-                updated = edit_form.save(commit=False)
-                new_category = (
-                    (edit_form.cleaned_data.get("category") or "").strip().upper()
-                )
-                new_payout = edit_form.cleaned_data.get("payout_amount")
+        if is_edit_post and claim.status != SRPClaim.Status.PENDING:
+            messages.error(
+                request,
+                f"Claim #{claim.id} is {claim.get_status_display()} — its payout is "
+                f"frozen and can't be edited. Un-approve or un-pay it back to "
+                f"Pending first, then edit the category or amount.",
+            )
+            return redirect("srp:claim_detail", claim_id=claim.id)
 
-                updated.category = new_category
-                updated.payout_amount = (
-                    new_payout
-                    if new_category == SRPClaim.Category.MANUAL
-                    else updated.calculate_payout()
-                )
+        if claim.status == SRPClaim.Status.PENDING:
+            if is_edit_post:
+                old_category = claim.category
+                old_payout = claim.payout_amount
 
-                updated.reviewer = request.user
-                updated.edited_at = timezone.now()
-                updated.save()
-
-                changes: list[str] = []
-                if old_category != updated.category:
-                    changes.append(
-                        f"category: {SRPClaim.category_label(old_category)} → {SRPClaim.category_label(updated.category)}"
+                edit_form = SRPClaimReviewerEditForm(request.POST, instance=claim)
+                if edit_form.is_valid():
+                    updated = edit_form.save(commit=False)
+                    new_category = (
+                        (edit_form.cleaned_data.get("category") or "").strip().upper()
                     )
-                if old_payout != updated.payout_amount:
-                    changes.append(f"payout: {old_payout} → {updated.payout_amount}")
+                    new_payout = edit_form.cleaned_data.get("payout_amount")
 
-                _add_review_record(
-                    updated,
-                    request.user,
-                    "Edited",
-                    "; ".join(changes) if changes else "Edited claim.",
-                )
+                    updated.category = new_category
+                    updated.payout_amount = (
+                        new_payout
+                        if new_category == SRPClaim.Category.MANUAL
+                        else updated.calculate_payout()
+                    )
 
-                messages.success(request, "Claim updated.")
-                return redirect("srp:claim_detail", claim_id=updated.id)
-        else:
-            edit_form = SRPClaimReviewerEditForm(instance=claim)
+                    updated.reviewer = request.user
+                    updated.edited_at = timezone.now()
+                    updated.save()
+
+                    changes: list[str] = []
+                    if old_category != updated.category:
+                        changes.append(
+                            f"category: {SRPClaim.category_label(old_category)} → {SRPClaim.category_label(updated.category)}"
+                        )
+                    if old_payout != updated.payout_amount:
+                        changes.append(
+                            f"payout: {old_payout} → {updated.payout_amount}"
+                        )
+
+                    _add_review_record(
+                        updated,
+                        request.user,
+                        "Edited",
+                        "; ".join(changes) if changes else "Edited claim.",
+                    )
+
+                    messages.success(request, "Claim updated.")
+                    return redirect("srp:claim_detail", claim_id=updated.id)
+            else:
+                edit_form = SRPClaimReviewerEditForm(instance=claim)
 
     return render(
         request,
@@ -823,6 +850,7 @@ def claim_detail(request, claim_id: int):
             "no_rigs_flag": claim.no_rigs_flag,
             # Forms
             "edit_form": edit_form,
+            "edit_locked": edit_locked,
         },
     )
 

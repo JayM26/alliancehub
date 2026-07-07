@@ -26,7 +26,7 @@ from .checks import (
     non_tnt_check,
     npc_check,
 )
-from .models import ShipPayout, SRPClaim, SRPConfig
+from .models import ClaimReview, ShipPayout, SRPClaim, SRPConfig
 
 User = get_user_model()
 
@@ -576,3 +576,103 @@ class SRPBulkImportTests(TestCase):
         html = r.content.decode()
         self.assertIn("unchanged", html)  # tnt_special/peacetime left alone
         self.assertIn("changed", html)  # strategic changed
+
+
+# ---------------------------------------------------------------------------
+# B0 — Reviewer edits are status-guarded (P2-4). The edit path recomputes via
+# calculate_payout() (which since A3 applies default_multiplier), so allowing it
+# on a frozen APPROVED/PAID claim would RE-SCALE money already committed. Edits
+# are allowed ONLY while PENDING; a POST on a processed claim is rejected
+# server-side and writes NO audit row.
+# ---------------------------------------------------------------------------
+class SRPReviewerEditGuardTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import Permission
+
+        self.reviewer = User.objects.create_user(username="rev", password="x")
+        perm = Permission.objects.get(
+            content_type__app_label="srp", codename="can_review_srp"
+        )
+        self.reviewer.user_permissions.add(perm)
+        self.client.force_login(self.reviewer)
+
+        cfg = SRPConfig.get()
+        cfg.auto_calculate_payouts = True
+        cfg.default_multiplier = Decimal("1")
+        cfg.save()
+
+    def _ship(self, name="Rifter", **cols):
+        defaults = dict(strategic=0, peacetime=0, shitstack=0, tnt_special=0)
+        defaults.update(cols)
+        return ShipPayout.objects.create(ship_name=name, **defaults)
+
+    def _claim(self, ship=None, category="STRATEGIC", status="PENDING", **extra):
+        return SRPClaim.objects.create(
+            submitter=self.reviewer,
+            character_name="Pilot",
+            category=category,
+            ship=ship,
+            status=status,
+            broadcast_text="op",
+            esi_link="https://esi.evetech.net/latest/killmails/1/abc/",
+            **extra,
+        )
+
+    def _url(self, claim):
+        return f"/srp/claim/{claim.id}/"
+
+    def test_edit_rejected_on_paid_claim_no_rescale_no_audit(self):
+        ship = self._ship(strategic=M100)
+        claim = self._claim(ship=ship)
+        claim.set_status("APPROVED", reviewer=self.reviewer)
+        claim.save()
+        claim.set_status("PAID", reviewer=self.reviewer)
+        claim.paid_at = timezone.now()
+        claim.save()
+        self.assertEqual(claim.payout_amount, M100)
+
+        # Multiplier bumps under the frozen claim; an edit POST must NOT re-scale.
+        cfg = SRPConfig.get()
+        cfg.default_multiplier = Decimal("3")
+        cfg.save()
+
+        resp = self.client.post(
+            self._url(claim),
+            {"edit_claim": "1", "category": "STRATEGIC", "payout_amount": ""},
+        )
+        self.assertEqual(resp.status_code, 302)  # rejected + redirect, no 500
+        claim.refresh_from_db()
+        self.assertEqual(claim.status, "PAID")
+        self.assertEqual(claim.payout_amount, M100)  # frozen, NOT 300M
+        self.assertFalse(
+            ClaimReview.objects.filter(claim=claim, action="Edited").exists()
+        )
+
+    def test_edit_form_not_offered_on_approved(self):
+        ship = self._ship(strategic=M100)
+        claim = self._claim(ship=ship)
+        claim.set_status("APPROVED", reviewer=self.reviewer)
+        claim.save()
+
+        resp = self.client.get(self._url(claim))
+        self.assertIsNone(resp.context["edit_form"])
+        self.assertTrue(resp.context["edit_locked"])
+
+    def test_edit_applies_and_audits_on_pending(self):
+        # Strategic 100M provisional; edit to Shitstack (50M) — no broadcast/
+        # reviewer model-clean traps on that category — recompute + audit row.
+        ship = self._ship(strategic=M100, shitstack=M50)
+        claim = self._claim(ship=ship, category="STRATEGIC")
+        self.assertEqual(claim.payout_amount, M100)
+
+        resp = self.client.post(
+            self._url(claim),
+            {"edit_claim": "1", "category": "SHITSTACK", "payout_amount": ""},
+        )
+        self.assertEqual(resp.status_code, 302)
+        claim.refresh_from_db()
+        self.assertEqual(claim.category, "SHITSTACK")
+        self.assertEqual(claim.payout_amount, M50)  # recomputed on the edit
+        self.assertTrue(
+            ClaimReview.objects.filter(claim=claim, action="Edited").exists()
+        )
