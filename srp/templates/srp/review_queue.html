@@ -245,6 +245,8 @@
                 <span class="badge text-bg-danger">Mismatch</span>
               {% elif c.fitcheck_status == "NO_DOCTRINE_FIT" %}
                 <span class="badge text-bg-secondary">No Fit</span>
+              {% elif c.fitcheck_status == "NO_KILLMAIL" %}
+                <span class="badge text-bg-secondary" title="ESI enrichment failed — no killmail data to fit-check">No KM</span>
               {% else %}
                 <span class="badge text-bg-secondary">—</span>
               {% endif %}

@@ -823,3 +823,86 @@ class SRPBatchActionTests(TestCase):
         ids = [c.id for c in resp.context["claims"]]
         self.assertIn(pending.id, ids)
         self.assertIn(approved.id, ids)
+
+
+# ---------------------------------------------------------------------------
+# B2 — Fit check precomputed at submission so the queue badge is populated
+# before a reviewer opens the claim. When ESI/killmail data is absent the
+# stored status is an HONEST sentinel (NO_KILLMAIL), never blank/false-clean.
+# No live ESI: uses stored killmail_raw / factory data only.
+# ---------------------------------------------------------------------------
+class SRPFitcheckPrecomputeTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="pilot", password="x")
+
+    def _claim(self, **extra):
+        return SRPClaim.objects.create(
+            submitter=self.user,
+            character_name="Pilot",
+            category="STRATEGIC",
+            status="PENDING",
+            broadcast_text="op",
+            esi_link="https://esi.evetech.net/latest/killmails/1/abc/",
+            **extra,
+        )
+
+    def test_no_killmail_stores_honest_sentinel(self):
+        from .fitcheck import FITCHECK_NO_KILLMAIL, precompute_fitcheck_on_submit
+
+        claim = self._claim(killmail_raw=None)
+        self.assertEqual(claim.fitcheck_status, "")  # nothing yet
+        precompute_fitcheck_on_submit(claim)
+        claim.refresh_from_db()
+        # Honest "no data" sentinel, NOT a blank badge and NOT a false-clean.
+        self.assertEqual(claim.fitcheck_status, FITCHECK_NO_KILLMAIL)
+        self.assertIsNotNone(claim.fitcheck_updated_at)
+
+    def test_empty_esi_body_stores_sentinel(self):
+        from .fitcheck import FITCHECK_NO_KILLMAIL, precompute_fitcheck_on_submit
+
+        # populate_claim_from_esi returns True on an empty fetch (P2-3), storing
+        # killmail_raw={} — falsy. The badge must still be honest, not blank.
+        claim = self._claim(killmail_raw={})
+        precompute_fitcheck_on_submit(claim)
+        claim.refresh_from_db()
+        self.assertEqual(claim.fitcheck_status, FITCHECK_NO_KILLMAIL)
+
+    def test_badge_populated_from_stored_killmail_no_live_esi(self):
+        from .fitcheck import precompute_fitcheck_on_submit
+        from .models import DoctrineFit, DoctrineFitItem
+
+        ship_type_id = 587  # Rifter
+        fit = DoctrineFit.objects.create(
+            ship_type_id=ship_type_id,
+            ship_name="Rifter",
+            name="Doctrine",
+            eft_text="x",
+            active=True,
+        )
+        # Expected: one high-slot module (type 111 x1).
+        DoctrineFitItem.objects.create(
+            doctrine_fit=fit, slot_group="HIGH", type_id=111, qty=1
+        )
+        km = {
+            "victim": {
+                "ship_type_id": ship_type_id,
+                "items": [
+                    # flag 27 -> High Slots (see slots.slot_group_from_flag)
+                    {"item_type_id": 111, "flag": 27, "quantity_destroyed": 1},
+                ],
+            },
+            "attackers": [],
+        }
+        claim = self._claim(killmail_raw=km, ship_type_id=ship_type_id)
+        precompute_fitcheck_on_submit(claim)
+        claim.refresh_from_db()
+
+        # Badge is a real verdict at submission time (no reviewer opened it yet,
+        # no live ESI touched).
+        self.assertTrue(claim.fitcheck_status)
+        self.assertNotEqual(claim.fitcheck_status, "NO_KILLMAIL")
+        self.assertIn(
+            claim.fitcheck_status, {"FIT_OK", "FIT_CLOSE", "FIT_MISMATCH"}
+        )
+        self.assertEqual(claim.fitcheck_best_fit_id, fit.id)
+        self.assertIsNotNone(claim.fitcheck_updated_at)

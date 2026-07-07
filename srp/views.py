@@ -50,7 +50,7 @@ from .checks import (
 )
 from .esi import fetch_type_name, get_type_names_cached, populate_claim_from_esi
 from .fit_importer import import_eft_fit
-from .fitcheck import ensure_fitcheck_cached
+from .fitcheck import ensure_fitcheck_cached, precompute_fitcheck_on_submit
 from .forms import (
     DoctrineFitEditForm,
     DoctrineFitImportForm,
@@ -146,6 +146,16 @@ def submit_claim(request):
                     request,
                     f"Your SRP claim has been submitted, but ESI pull failed: {e}",
                 )
+
+            # Precompute the fit check so the review-queue badge is populated
+            # before a reviewer opens the claim (B2). Best-effort: never block
+            # submission on it — the lazy path in claim_detail is the fallback.
+            # When there's no killmail data it stores an honest sentinel, not a
+            # blank/clean badge.
+            try:
+                precompute_fitcheck_on_submit(claim)
+            except Exception:
+                pass
 
             return redirect("srp:my_claims")
 

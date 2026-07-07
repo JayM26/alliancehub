@@ -13,6 +13,13 @@ from .slots import slot_group_from_flag  # ✅ shared helper
 
 SLOT_GROUPS = ("High Slots", "Mid Slots", "Low Slots", "Rigs")
 
+# Honest sentinel stored when there is NO killmail data to fit-check at all —
+# ESI enrichment failed, or the fetch returned an empty body. It renders as a
+# neutral "ESI failed" badge in the queue: never a blank that a reviewer could
+# read as "not yet checked", and never a false-clean. (Cluster A philosophy,
+# applied to the fit badge: absent != OK.)
+FITCHECK_NO_KILLMAIL = "NO_KILLMAIL"
+
 
 @dataclass(frozen=True)
 class FitScore:
@@ -212,6 +219,30 @@ def compute_fitcheck(claim: SRPClaim) -> dict[str, Any]:
         "no_rigs": no_rigs,
         "diff": diff,
     }
+
+
+def precompute_fitcheck_on_submit(claim: SRPClaim) -> None:
+    """
+    Populate the cached fit-check fields at submission time (B2) so the review
+    queue's Fitting badge is meaningful before any reviewer opens the claim.
+    The lazy path in claim_detail (ensure_fitcheck_cached) stays as the
+    fallback/refresh — this just primes the cache up front.
+
+    When there is no killmail data to check — ESI enrichment failed, or returned
+    an empty body — store an HONEST sentinel status (FITCHECK_NO_KILLMAIL)
+    instead of leaving the badge blank. Submission itself never depends on this;
+    the caller invokes it best-effort so a fit-check hiccup can't block a claim.
+    """
+    if claim.killmail_raw:
+        # Same compute+store the detail page uses; on a killmail with no
+        # resolvable ship this stores a blank status (renders neutral "—"),
+        # which is honest (uncomputable), not a false-clean.
+        ensure_fitcheck_cached(claim)
+        return
+
+    claim.fitcheck_status = FITCHECK_NO_KILLMAIL
+    claim.fitcheck_updated_at = timezone.now()
+    claim.save(update_fields=["fitcheck_status", "fitcheck_updated_at"])
 
 
 def ensure_fitcheck_cached(claim: SRPClaim) -> None:
