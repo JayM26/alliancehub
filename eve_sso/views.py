@@ -272,8 +272,13 @@ def eve_callback(request):
     }
 
     with transaction.atomic():
+        # Lock only the EveCharacter row (of=("self",)), not the joined user.
+        # `select_related("user")` LEFT-OUTER-JOINs the nullable user FK; Django 5.2
+        # raises NotSupportedError ("FOR UPDATE cannot be applied to the nullable side
+        # of an outer join") if the lock spans that join. Scoping FOR UPDATE to this
+        # table keeps both the prefetch and the row lock. (Django 5.2 upgrade fix.)
         existing_char = (
-            EveCharacter.objects.select_for_update()
+            EveCharacter.objects.select_for_update(of=("self",))
             .filter(character_id=character_id)
             .select_related("user")
             .first()
