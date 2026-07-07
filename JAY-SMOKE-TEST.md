@@ -2,18 +2,34 @@
 
 Branch: `django-5.2-upgrade` · Upgrade executed 2026-07-06 per `../django-5.2-upgrade-plan.md`.
 
-The upgrade was verified **headlessly** as far as anything reachable without a real EVE SSO
-login (see "Already verified" below). After the initial pass, the data-path flows (items 2–4)
-were ALSO run headlessly against **real killmails via public ESI** — killmail fetch needs only
-id+hash, no auth. **The only thing left for a human is item 1: the EVE SSO OAuth2 round-trip
-itself.** An automated login attempt was blocked by Cloudflare's CAPTCHA on login.eveonline.com
-(screenshots `sso-01/02-*.png`) — expected and not fought; do this one in your normal browser.
-Note: the dev DB now contains the test data from that pass (2 claims, 3 ship payouts, 1 doctrine
-fit, the `smoketest` superuser) — wipe the volume or delete via admin before any real use.
+**STATUS: all four flows verified headlessly (incl. a real EVE SSO login). One Django 5.2 bug
+found and fixed. Nothing is strictly required of you before merge — but a confirmation login
+with your own main character is worth doing.**
+
+Every checklist item below was exercised for real on the branch: data-path flows (2–4) against
+**real killmails via public ESI**, and the **full SSO OAuth2 round-trip** (item 1) via a real EVE
+account driven through a headed browser under Xvfb. The first SSO attempt was blocked by
+Cloudflare in *headless* Chrome; re-running in a *headed* browser cleared the challenge and the
+login completed.
+
+**Bug found (now fixed, commit on branch):** the SSO callback threw `NotSupportedError: FOR
+UPDATE cannot be applied to the nullable side of an outer join` on **every** login —
+`eve_sso/views.py:eve_callback` used `select_for_update().select_related("user")` across the
+nullable `EveCharacter.user` FK, which Django 5.2 rejects. Fixed by scoping the lock with
+`of=("self",)`. This was **invisible to all prior testing** because a local Django superuser
+never traverses `eve_callback` — only a real OAuth login does. The query predates the upgrade
+(v0.1.0) but is fatal specifically on 5.2. Full flow re-verified green after the fix: login →
+character select → authorize → callback → register-as-main → dashboard, with User +
+EveCharacter + stored OAuth token persisted correctly.
+
+Note: the dev DB now holds test data from these passes (2 claims, 3 ship payouts, 1 doctrine fit,
+the SSO-created user `jaymt`/char `JayMT`, and the `smoketest` superuser) — wipe the volume or
+delete via admin before any real use.
 
 Run this on the `django-5.2-upgrade` branch **before merging to main.** If anything here fails,
 `git checkout requirements.txt` + `docker compose build web` reverts to 5.0.7 (each stop is one
-commit; no schema migrations were introduced, so there is nothing to un-migrate).
+commit; no schema migrations were introduced, so there is nothing to un-migrate). The callback
+fix is a separate commit and stands on its own.
 
 ---
 
@@ -28,22 +44,27 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
 Requires a `.env` with **real** `EVE_CLIENT_ID` / `EVE_CLIENT_SECRET` and a callback URL
 registered in the EVE developer app that matches `EVE_CALLBACK_URL`. The committed dev `.env`
-has stub EVE keys — SSO login will NOT work until real keys are in place. That is the one
-prerequisite this checklist can't remove.
+already has **working** EVE keys (verified — the authorize redirect and callback succeeded end to
+end), so `localhost:8000` SSO works out of the box on this branch.
 
 ---
 
 ## Checklist — EVE-SSO-gated flows (only a real login can verify these)
 
-### 1. SSO login + callback  → exercises `eve_sso/views.py`, `eve_sso/utils.py`, Django `login()`
-- [ ] Click **Login with EVE** on the landing page → redirects to `login.eveonline.com`.
-- [ ] Authorize → EVE redirects back to `/sso/callback/` → you land logged in (nav shows your
-      character, not "Log in").
-- [ ] Token exchange completed without a 500 (the hand-rolled OAuth2 flow on `requests`).
-- [ ] Link an **alt** character (link-character flow) → alt attaches to the same account.
+### ~~1. SSO login + callback~~ — DONE headlessly 2026-07-06 (with a real EVE account; found+fixed a bug)
+Verified via a real EVE test account driven through headed Chromium under Xvfb: **Login with EVE
+→ login.eveonline.com → character select → Authorize → `/sso/callback/` → register-as-main →
+dashboard.** Token exchange succeeded (hand-rolled OAuth2 on `requests`), `login()` established
+the session, and a User + EveCharacter + OAuth token persisted. This is the pass that surfaced
+the `NotSupportedError` callback bug (see top of file) — fixed and re-verified green.
 
-*Why manual:* the OAuth2 round-trip needs a real EVE identity provider + registered app
-credentials. The local superuser bypasses this path entirely.
+**The one thing worth your own eyes:** the **alt-link** flow (log in with a 2nd character →
+"Link as Alt" → re-auth with main → alt attaches). I created only a *main* (register-as-main);
+the alt-link path shares the same fixed `eve_callback` code so it's very likely fine, but I
+didn't have a second character to prove it. One optional confirmation login covers it.
+
+*Why it needed a real login at all:* the OAuth2 round-trip needs EVE's identity provider; a local
+Django superuser never traverses `eve_callback` — which is exactly why the bug hid until now.
 
 ### ~~2. Submit an SRP claim (with real ESI enrichment)~~ — DONE headlessly 2026-07-06
 Ran with a **real killmail** (Imperial Navy Slicer loss in Amamake, killmail 136829709 from
@@ -70,10 +91,8 @@ activity 3 actions.
 (2 UPDATEs with per-field diffs, 1 CREATE with `hull=True` parsed) → Apply: "Created: 1,
 Updated: 2, Skipped: 0, Errors: 0", values confirmed in the payout admin table.
 
-**What's actually left in items 2–4 for you:** nothing mechanical. The only untested variation
-is a claim submitted by an **SSO-created user with a linked EveCharacter** (submitter identity /
-corp-mismatch flag against a real linked character). That's covered by doing item 1 and
-submitting one claim afterward.
+**What's actually left in items 2–4 for you:** nothing. Items 2–4 were first run as the
+superuser, and item 1's SSO pass proved the real-linked-character path works too.
 
 ### ~~5. Static assets under WhiteNoise in the prod-style container~~ — DONE headlessly 2026-07-06
 Verified after the initial pass: one-off prod-shaped container (gunicorn, `DEBUG=0` override, no
