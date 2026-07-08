@@ -2,6 +2,36 @@
 
 Branch: `django-5.2-upgrade` · Upgrade executed 2026-07-06 per `../django-5.2-upgrade-plan.md`.
 
+---
+
+## 2026-07-07 addendum — P0 + Cluster A + Cluster B + P1-4 are on this branch too
+
+Since the upgrade pass, the same branch gained the review-backlog fixes (see
+`../REVIEW-FINDINGS-2026-07-06.md` for statuses): **P0** payout freeze + reversal transitions
+(`967dc59`), **Cluster A** unconfigured-≠-clean sentinels (`c66246d..ce74d3b`), **Cluster B**
+batch actions + default-to-Pending + precomputed fit badge + PENDING-only reviewer edits
+(`03dd989..71579da`), and **P1-4** claim ownership check (`8a44335`). Suite: **64 tests, green**
+(was 0). Two schema migrations were introduced (0017 npc_damage_threshold, 0018 help text) — so
+the old "nothing to un-migrate" note above no longer holds for the post-upgrade commits.
+
+**Worth your actual eyes (5 min, as `smoketest` superuser):**
+1. **Review queue** — opens on Pending by default; checkbox column + batch Approve/Deny. Select a
+   mix and batch-approve: claims needing a money decision get *skipped and named* in the result
+   message, not silently approved. Feel check: is skip-and-report the right UX for you?
+2. **Claim detail (claim #1)** — auto-checks now render neutral "not configured" (grey) instead
+   of green, "NPC 30.9%" instead of a bare warning, and an INFO "Filed on behalf" badge (correct:
+   the smoketest account filed it and doesn't own the victim character).
+3. **SRPConfig admin** — `default_multiplier` and the monthly ceilings now DO things (help text
+   explains exactly what). Set a tiny ceiling and approve a claim to see the warning.
+4. **Bulk payout CSV** — preview now shows per-tier changed/unchanged; a CSV missing a column
+   leaves that tier alone instead of zeroing it.
+5. **Ownership gate** — needs an SSO login to feel: submitting a killmail whose victim isn't one
+   of your linked characters is rejected with a link-your-alt message (reviewers are exempt and
+   get the on-behalf badge instead).
+
+Everything above is regression-tested + verified headlessly; the checklist is about UX judgment,
+not correctness. Dev-DB wipe note (top of file) still applies before real use.
+
 **STATUS: all four flows verified headlessly (incl. a real EVE SSO login). One Django 5.2 bug
 found and fixed. Nothing is strictly required of you before merge — but a confirmation login
 with your own main character is worth doing.**
