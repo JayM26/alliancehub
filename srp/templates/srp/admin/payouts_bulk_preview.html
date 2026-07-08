@@ -79,10 +79,12 @@
                     </td>
 
                     <td>
-                        {# Every tier shown, so the reviewer sees changed vs.
+                        {% comment %}
+                           Every tier shown, so the reviewer sees changed vs.
                            deliberately-unchanged. A tier whose column is missing
                            or blank is marked "unchanged" and left as-is —
-                           never silently overwritten to 0. #}
+                           never silently overwritten to 0.
+                        {% endcomment %}
                         <div class="small">
                         {% for t in r.tiers %}
                             <div>

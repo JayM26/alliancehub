@@ -1159,3 +1159,58 @@ class SRPOwnershipSubmitTests(TestCase):
         claim = SRPClaim.objects.get()
         res = ownership_check(claim)
         self.assertEqual(res.state, CheckResult.NA)
+
+class TemplateCommentLeakTests(TestCase):
+    """
+    Regression guard for the template-comment leak class (found in the
+    2026-07-07 real-browser P1-4 verification pass): Django's ``{# ... #}``
+    syntax only strips SINGLE-line comments, so a comment block spanning
+    lines is served to the browser as visible literal text. Multi-line dev
+    notes must use ``{% comment %}...{% endcomment %}``.
+
+    Renders the high-traffic authed pages and asserts the raw response never
+    contains a literal ``{#`` — guarding the whole bug class, not just the
+    instances fixed.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser(
+            username="leakcheck", password="x", email="leak@example.test"
+        )
+        self.client.force_login(self.user)
+        self.ship = ShipPayout.objects.create(
+            ship_name="LeakShip",
+            strategic=M100,
+            peacetime=0,
+            shitstack=0,
+            tnt_special=0,
+        )
+        self.claim = SRPClaim.objects.create(
+            submitter=self.user,
+            character_name="LeakPilot",
+            category="STRATEGIC",
+            ship=self.ship,
+            status="PENDING",
+            broadcast_text="op",
+            esi_link="https://esi.evetech.net/latest/killmails/990001/feed01/",
+        )
+
+    def assertNoCommentLeak(self, url):
+        resp = self.client.get(url)
+        self.assertEqual(resp.status_code, 200, f"{url} did not render")
+        self.assertNotIn(
+            b"{#",
+            resp.content,
+            f"{url} leaks a Django template comment into served HTML "
+            "(multi-line {# ... #} is not stripped; use {% comment %}).",
+        )
+
+    def test_high_traffic_pages_do_not_leak_template_comments(self):
+        for url in (
+            f"/srp/claim/{self.claim.id}/",
+            "/srp/queue/?status=all",
+            "/srp/submit/",
+            "/srp/admin/overview/",
+        ):
+            with self.subTest(url=url):
+                self.assertNoCommentLeak(url)

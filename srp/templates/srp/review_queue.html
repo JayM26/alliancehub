@@ -40,10 +40,12 @@
 </form>
 
 {% if claims %}
-  {# Batch action bar. Inputs in the table rows below associate with this form
+  {% comment %}
+     Batch action bar. Inputs in the table rows below associate with this form
      via form="batchForm" so we never nest <form>s (the per-row action form
      stays separate). Approve/Deny post to the batch endpoint, which re-runs the
-     per-claim safeguards and skips (never approves) money-warning claims. #}
+     per-claim safeguards and skips (never approves) money-warning claims.
+  {% endcomment %}
   <form id="batchForm" method="post" action="{% url 'srp:batch_action' %}" class="mb-2">
     {% csrf_token %}
     <div class="d-flex gap-2 align-items-center flex-wrap">
@@ -261,10 +263,12 @@
           <!-- FLAGS COLUMN -->
           <td>
             <div class="d-flex flex-column gap-1">
-              {# Only surface a flag when it WARNs or could NOT be computed (NA,
+              {% comment %}
+                 Only surface a flag when it WARNs or could NOT be computed (NA,
                  neutral). A genuine CLEAN check shows nothing here (green lives
                  on the detail page); a NA badge signals "not configured / not
-                 checked" so absence-of-flag never reads as "checked & safe". #}
+                 checked" so absence-of-flag never reads as "checked & safe".
+              {% endcomment %}
               {% if c.check_blue.is_warn %}
                 <span class="badge text-bg-warning">Blue</span>
               {% elif c.check_blue.is_na %}
@@ -285,10 +289,12 @@
               {% elif c.check_non_tnt.is_na %}
                 <span class="badge text-bg-secondary" title="{{ c.check_non_tnt.label }}">TNT?</span>
               {% endif %}
-              {# Ownership (P1-4): "On behalf" (INFO, neutral) is the sanctioned
+              {% comment %}
+                 Ownership (P1-4): "On behalf" (INFO, neutral) is the sanctioned
                  reviewer-filed path; "Not owner" (WARN, danger) is a claim the
                  submit gate would now block (legacy/rescinded-perm). Own losses
-                 and unresolved victims stay off the queue. #}
+                 and unresolved victims stay off the queue.
+              {% endcomment %}
               {% if c.check_ownership.is_warn %}
                 <span class="badge text-bg-danger" title="{{ c.check_ownership.label }}">Not owner</span>
               {% elif c.check_ownership.is_info %}
